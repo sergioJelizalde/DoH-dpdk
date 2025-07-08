@@ -15,4 +15,6 @@ sudo export PKG_CONFIG_PATH=${PKG_CONFIG_PATH}:/opt/mellanox/flexio/lib/pkgconfi
 # Add DPDK include pkg-config path
 sudo export PKG_CONFIG_PATH=${PKG_CONFIG_PATH}:/opt/mellanox/dpdk/include/aarch64-linux-gnu/dpdk
 
+sudo sh -c  "echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
+
 echo "Environment configured."
