@@ -2,10 +2,10 @@
 # Copyright(c) 2010-2014 Intel Corporation
 
 # binary name
-APP = crc_app
+APP = mlp_app
 
 # all source are stored in SRCS-y
-SRCS-y := crc32.c
+SRCS-y := mlp_tests.c
 
 PKGCONF ?= pkg-config
 
