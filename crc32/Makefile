@@ -2,10 +2,10 @@
 # Copyright(c) 2010-2014 Intel Corporation
 
 # binary name
-APP = iot_app
+APP = crc_app
 
 # all source are stored in SRCS-y
-SRCS-y := main.c
+SRCS-y := crc32.c
 
 PKGCONF ?= pkg-config
 
