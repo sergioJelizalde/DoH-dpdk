@@ -1,0 +1,188 @@
+#include <rte_eal.h>
+#include <rte_ethdev.h>
+#include <rte_lcore.h>
+#include <rte_mbuf.h>
+#include <rte_launch.h>  // for rte_eal_remote_launch
+
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <arm_acle.h>    // for __crc32* intrinsics
+
+#define NUM_MBUFS        8191
+#define MBUF_CACHE_SIZE  512
+#define BURST_SIZE       128
+#define NUM_RX_QUEUES    3    // RSS queues per port
+#define QUEUE_SIZE       256 // descriptors per queue
+
+static const struct rte_eth_conf port_conf_default = {
+    .rxmode = {
+        .mq_mode  = RTE_ETH_MQ_RX_RSS,
+        .offloads = 0,
+    },
+    .rx_adv_conf = {
+        .rss_conf = {
+            .rss_key = NULL,
+            .rss_hf  = RTE_ETH_RSS_IP | RTE_ETH_RSS_TCP,
+        }
+    }
+};
+
+/* 1) Extend lcore_params to carry both RX and TX port IDs */
+struct lcore_params {
+    uint16_t rx_port;
+    uint16_t tx_port;
+    uint16_t queue_id;
+};
+
+// Fixed JA3 string for testing
+static const char fixed_msg[] =
+  "771,4865-4866-4867-49195-49199-49196-49200-"
+  "52393-52392-49171-49172-156-157-47-53-"
+  "10,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-21,29-23-24,0";
+static const size_t fixed_len = sizeof(fixed_msg) - 1;
+
+// Hardware-accelerated CRC32
+static uint32_t
+crc32_hw(const uint8_t *buf, size_t len, uint32_t seed)
+{
+    uint32_t crc = ~seed;
+    while (len >= 8) {
+        uint64_t v; memcpy(&v, buf, 8);
+        crc = __crc32d(crc, v);
+        buf += 8; len -= 8;
+    }
+    while (len >= 4) {
+        uint32_t v; memcpy(&v, buf, 4);
+        crc = __crc32w(crc, v);
+        buf += 4; len -= 4;
+    }
+    while (len >= 2) {
+        uint16_t v; memcpy(&v, buf, 2);
+        crc = __crc32h(crc, v);
+        buf += 2; len -= 2;
+    }
+    while (len--) {
+        crc = __crc32b(crc, *buf++);
+    }
+    return ~crc;
+}
+
+static int
+lcore_main_loop(void *arg)
+{
+    struct lcore_params *p = arg;
+    const uint16_t rxp = p->rx_port, txp = p->tx_port, q = p->queue_id;
+    uint32_t total_pkts_rec = 0, total_pkts_proc = 0;
+    struct rte_mbuf *bufs[BURST_SIZE];
+    uint64_t hz       = rte_get_tsc_hz();
+    uint64_t next_tsc = rte_get_tsc_cycles() + 2*hz;
+
+    while (1) {
+        uint16_t nb_rx = rte_eth_rx_burst(rxp, q, bufs, BURST_SIZE);
+        total_pkts_rec += nb_rx;
+        if (!nb_rx) continue;
+
+        for (uint16_t i = 0; i < nb_rx; i++) {
+            struct rte_ether_hdr *eth =
+                rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
+
+            /* Swap MACs */
+            struct rte_ether_addr tmp_mac;
+            rte_ether_addr_copy(&eth->src_addr, &tmp_mac);
+            rte_ether_addr_copy(&eth->dst_addr, &eth->src_addr);
+            rte_ether_addr_copy(&tmp_mac, &eth->dst_addr);
+
+            /* CRC (or other work) */
+            uint32_t crc = crc32_hw((const uint8_t*)fixed_msg, fixed_len, 0x00000000);
+            (void)crc;
+        }
+
+        /* 3) TX out on port 1 (txp) */
+        uint16_t nb_tx = rte_eth_tx_burst(txp, q, bufs, nb_rx);
+        total_pkts_proc += nb_tx;
+
+        uint64_t cur = rte_get_tsc_cycles();
+        if (cur >= next_tsc) {
+            printf("Core %u: recv=%u proc=%u\n",
+                   rte_lcore_id(), total_pkts_rec, total_pkts_proc);
+            next_tsc += 2*hz;
+            total_pkts_rec  = 0;
+            total_pkts_proc = 0;
+        }
+
+        if (nb_tx < nb_rx)
+            for (uint16_t i = nb_tx; i < nb_rx; i++)
+                rte_pktmbuf_free(bufs[i]);
+    }
+    return 0;
+}
+
+int
+main(int argc, char *argv[])
+{
+    struct rte_mempool *mbuf_pool;
+    int ret = rte_eal_init(argc, argv);
+    if (ret < 0)
+        rte_exit(EXIT_FAILURE, "EAL init failed\n");
+
+    if (rte_eth_dev_count_avail() < 2)
+        rte_exit(EXIT_FAILURE, "Need at least 2 ports\n");
+
+    mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL",
+        NUM_MBUFS * rte_eth_dev_count_avail(),
+        MBUF_CACHE_SIZE, 0,
+        RTE_MBUF_DEFAULT_BUF_SIZE,
+        rte_socket_id());
+    if (!mbuf_pool)
+        rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
+
+    /* 2) Configure & start both ports: 0 (RX) and 1 (TX) */
+    for (uint16_t pid = 0; pid <= 1; pid++) {
+        ret = rte_eth_dev_configure(pid,
+                                    NUM_RX_QUEUES,
+                                    NUM_RX_QUEUES,
+                                    &port_conf_default);
+        if (ret < 0)
+            rte_exit(EXIT_FAILURE, "Cannot configure port %u\n", pid);
+
+        for (uint16_t q = 0; q < NUM_RX_QUEUES; q++) {
+            if (rte_eth_rx_queue_setup(pid, q, QUEUE_SIZE,
+                                       rte_eth_dev_socket_id(pid),
+                                       NULL, mbuf_pool) < 0 ||
+                rte_eth_tx_queue_setup(pid, q, QUEUE_SIZE,
+                                       rte_eth_dev_socket_id(pid),
+                                       NULL) < 0)
+            {
+                rte_exit(EXIT_FAILURE,
+                         "Queue %u setup failed on port %u\n", q, pid);
+            }
+        }
+        if (rte_eth_dev_start(pid) < 0)
+            rte_exit(EXIT_FAILURE, "Failed to start port %u\n", pid);
+        rte_eth_promiscuous_enable(pid);
+        printf("Started port %u\n", pid);
+    }
+
+    /* Now spawn lcores: RX=port0 → TX=port1 */
+    static struct lcore_params params[NUM_RX_QUEUES];
+    uint16_t q = 0;
+    unsigned core_id;
+    RTE_LCORE_FOREACH_WORKER(core_id) {
+        if (q >= NUM_RX_QUEUES - 1) break;
+        params[q].rx_port  = 0;
+        params[q].tx_port  = 1;
+        params[q].queue_id = q;
+        rte_eal_remote_launch(lcore_main_loop, &params[q], core_id);
+        q++;
+    }
+    /* last queue on master core */
+    params[q].rx_port  = 0;
+    params[q].tx_port  = 1;
+    params[q].queue_id = q;
+    lcore_main_loop(&params[q]);
+
+    return 0;
+}
