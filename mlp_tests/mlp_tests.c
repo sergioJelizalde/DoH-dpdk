@@ -12,7 +12,12 @@
 #include <arm_neon.h>
 #include <rte_eal.h>
 #include <rte_cycles.h>
-#include "mlp_model.h"   // defines NUM_LAYERS, LAYER_SIZES[], W0…Wn-1, B0…Bn-1, WEIGHTS[], BIASES[]
+
+// models
+#include "mlp_model_xs.h"
+//#include "mlp_model_s.h"  
+//#include "mlp_model_m.h"  
+//#include "mlp_model_l.h"      
 
 #define ITERATIONS      5000
 #define MIN_PKT_SIZE    64.0f
