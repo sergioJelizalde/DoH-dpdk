@@ -43,21 +43,15 @@
  #include <rte_mempool.h>
  #include <rte_mbuf.h>
  #include <rte_cycles.h>
- #include <rte_regexdev.h>
- 
- #include <rte_crypto.h>
- #include <rte_cryptodev.h>
- 
+
  #include <rte_hash.h>
  #include <rte_jhash.h>
- #include <jansson.h>
  
  #include <rte_flow.h>
- #include <signal.h>
  
  //for bluefield2
  #include <arm_neon.h>
- #include "mlp_model.h"
+ #include "mlp_8.h"
 
 #define RX_RING_SIZE  32768U     /* (1 << 15) */
 #define TX_RING_SIZE  32768U
