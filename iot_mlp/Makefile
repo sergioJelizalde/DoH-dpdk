@@ -2,10 +2,10 @@
 # Copyright(c) 2010-2014 Intel Corporation
 
 # binary name
-APP = mlp_app
+APP = iot_app
 
 # all source are stored in SRCS-y
-SRCS-y := rf_mlp.c
+SRCS-y := iot_multicore.c
 
 PKGCONF ?= pkg-config
 
