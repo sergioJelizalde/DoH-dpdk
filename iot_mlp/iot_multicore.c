@@ -714,13 +714,20 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
         w->mbuf_pool  = mbuf_pool;
         w->flow_table = flow_table;
         w->queue_id   = q;
+        
+        // mlp initialization
+        // find maximum neurons 
+        int max_neurons = 0;
+        for (int i = 0; i <= NUM_LAYERS; i++)
+            if (LAYER_SIZES[i] > max_neurons)
+                max_neurons = LAYER_SIZES[i];
 
         posix_memalign((void**)&w->buf_a, 16, max_neurons * sizeof(float));
         posix_memalign((void**)&w->buf_b, 16, max_neurons * sizeof(float));
 
         lcore_main(w);   // call in the master thread
     }
-    
+
  
      char command[50];
      
