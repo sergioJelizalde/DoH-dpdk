@@ -80,8 +80,6 @@
 // mem align for mlp
 static float *aux_a;
 static float *aux_b;
-static float *raw_input;
-static float *input;
 
  typedef struct
  {
@@ -446,7 +444,7 @@ void handle_packet(struct flow_key *key,
             (float)e->flag_bits_sum
         };
 
-        int prediction = predict_mlp(features, aux_a, aux_b);
+        int prediction = predict_mlp(features, w->buf_a, w->buf_b);
         //printf("MLP prediction: %d\n", prediction);
 
         /* cleanup flow */
@@ -458,10 +456,12 @@ void handle_packet(struct flow_key *key,
 
  struct
  {
-     struct rte_mempool *mbuf_pool;
-     struct rte_hash *flow_table;
-     int packet_counters[10];
- }worker_args;
+    struct rte_mempool *mbuf_pool;
+    struct rte_hash *flow_table;
+    float             *buf_a;
+    float             *buf_b;
+    int packet_counters[10];
+ }worker_args[RTE_MAX_LCORE];
  
  double right_predictions=0;
  double wrong_predictions=0;
@@ -469,26 +469,14 @@ void handle_packet(struct flow_key *key,
  double received_packets=0;
  double processed_packets=0;
  
-// mlp neurons allocation
-int max_neurons = 0;
-for (int i = 0; i <= NUM_LAYERS; i++)
-    if (LAYER_SIZES[i] > max_neurons)
-        max_neurons = LAYER_SIZES[i];
-
-// allocate aligned buffers for neon 16bytes (128bits)
-if (posix_memalign((void**)&aux_a, 16, max_neurons * sizeof(float)) ||
-    posix_memalign((void**)&aux_b, 16, max_neurons * sizeof(float)) ||
-    posix_memalign((void**)&raw_input, 16, LAYER_SIZES[0] * sizeof(float)) ||
-    posix_memalign((void**)&input,     16, LAYER_SIZES[0] * sizeof(float)))
-{
-    rte_exit(EXIT_FAILURE, "posix_memalign failed\n");
-}
-
- static int lcore_main(void *args)
+ static int
+ lcore_main(void *args)
  {
-     // struct worker_args *w_args = (struct worker_args *)args;
-     struct rte_mempool *mbuf_pool = worker_args.mbuf_pool;
-     struct rte_hash *flow_table = worker_args.flow_table;
+    // struct worker_args *w_args = (struct worker_args *)args;
+    struct rte_mempool *mbuf_pool = worker_args.mbuf_pool;
+    struct rte_hash *flow_table = worker_args.flow_table;
+    struct worker_args *w = arg;       
+
      // int core_id = rte_lcore_id();
      // int *packet_counter = &worker_args.packet_counters[core_id];
  
@@ -581,7 +569,7 @@ if (posix_memalign((void**)&aux_a, 16, max_neurons * sizeof(float)) ||
                             // int prediction = predict_mlp(features);
                             // uint64_t start_cycles = rte_rdtsc_precise();
 
-                            handle_packet(&key, pkt_len, pkt_time,flags_count);
+                            handle_packet(&key, pkt_len, pkt_time, flags_count);
 
                             // uint64_t end_cycles = rte_rdtsc_precise();
                             // uint64_t inference_cycles = end_cycles - start_cycles;
@@ -676,7 +664,20 @@ if (posix_memalign((void**)&aux_a, 16, max_neurons * sizeof(float)) ||
      
 
      // mlp initialization
-    
+    // find maximum neurons 
+    int max_neurons = 0;
+    for (int i = 0; i <= NUM_LAYERS; i++)
+        if (LAYER_SIZES[i] > max_neurons)
+            max_neurons = LAYER_SIZES[i];
+
+    // allocate aligned buffers for neon 16bytes (128bits)
+    if (posix_memalign((void**)&aux_a, 16, max_neurons * sizeof(float)) ||
+        posix_memalign((void**)&aux_b, 16, max_neurons * sizeof(float)))
+    {
+        rte_exit(EXIT_FAILURE, "posix_memalign failed\n");
+    }
+
+
      argc -= ret;
      argv += ret;
  
@@ -698,13 +699,22 @@ if (posix_memalign((void**)&aux_a, 16, max_neurons * sizeof(float)) ||
          printf("port %u initialized\n",portid);
      };
  
-    
-     worker_args.mbuf_pool = mbuf_pool;
-     worker_args.flow_table = flow_table;
- 
+
      RTE_LCORE_FOREACH_WORKER(lcore_id)
      {
-         rte_eal_remote_launch(lcore_main, &worker_args, lcore_id);
+        struct worker_args *w = &worker_args[lcore_id];
+
+        // share pool and table
+        w->mbuf_pool  = mbuf_pool;
+        w->flow_table = flow_table;
+
+        // allocate *this core’s* NEON buffers
+        if (posix_memalign((void**)&w->buf_a, 16, max_neurons * sizeof(float)) ||
+            posix_memalign((void**)&w->buf_b, 16, max_neurons * sizeof(float))) {
+            rte_exit(EXIT_FAILURE, "posix_memalign failed\n");
+    }
+
+         rte_eal_remote_launch(lcore_main, w, lcore_id);
      }
  
      char command[50];
