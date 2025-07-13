@@ -442,6 +442,7 @@ struct worker_args {
     struct rte_hash    *flow_table;
     float              *buf_a;
     float              *buf_b;
+    int packet_counters[10];
     /* add other per-core buffers here if you need them, e.g.: */
     // float *raw_input;
     // float *input;
@@ -703,7 +704,7 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
  
      char command[50];
  
-     int *packet_counters = worker_args->packet_counters;
+     int *packet_counters = worker_args.packet_counters;
      
      while (1) {
          printf("Enter command: ");
