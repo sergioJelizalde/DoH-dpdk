@@ -469,8 +469,22 @@ void handle_packet(struct flow_key *key,
  double received_packets=0;
  double processed_packets=0;
  
- static int
- lcore_main(void *args)
+// mlp neurons allocation
+int max_neurons = 0;
+for (int i = 0; i <= NUM_LAYERS; i++)
+    if (LAYER_SIZES[i] > max_neurons)
+        max_neurons = LAYER_SIZES[i];
+
+// allocate aligned buffers for neon 16bytes (128bits)
+if (posix_memalign((void**)&aux_a, 16, max_neurons * sizeof(float)) ||
+    posix_memalign((void**)&aux_b, 16, max_neurons * sizeof(float)) ||
+    posix_memalign((void**)&raw_input, 16, LAYER_SIZES[0] * sizeof(float)) ||
+    posix_memalign((void**)&input,     16, LAYER_SIZES[0] * sizeof(float)))
+{
+    rte_exit(EXIT_FAILURE, "posix_memalign failed\n");
+}
+
+ static int lcore_main(void *args)
  {
      // struct worker_args *w_args = (struct worker_args *)args;
      struct rte_mempool *mbuf_pool = worker_args.mbuf_pool;
@@ -501,22 +515,6 @@ void handle_packet(struct flow_key *key,
  
      uint32_t pkt_count = 0;
      uint16_t queue_id =  rte_lcore_id() - 1;
-    
-
-// find maximum neurons 
-    int max_neurons = 0;
-    for (int i = 0; i <= NUM_LAYERS; i++)
-        if (LAYER_SIZES[i] > max_neurons)
-            max_neurons = LAYER_SIZES[i];
-
-    // allocate aligned buffers for neon 16bytes (128bits)
-    if (posix_memalign((void**)&aux_a, 16, max_neurons * sizeof(float)) ||
-        posix_memalign((void**)&aux_b, 16, max_neurons * sizeof(float)) ||
-        posix_memalign((void**)&raw_input, 16, LAYER_SIZES[0] * sizeof(float)) ||
-        posix_memalign((void**)&input,     16, LAYER_SIZES[0] * sizeof(float)))
-    {
-        rte_exit(EXIT_FAILURE, "posix_memalign failed\n");
-    }
 
  
      for (;;)
