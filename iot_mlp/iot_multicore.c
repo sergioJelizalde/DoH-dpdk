@@ -703,7 +703,7 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
  
      char command[50];
  
-     int *packet_counters = worker_args.packet_counters;
+     int *packet_counters = worker_args->packet_counters;
      
      while (1) {
          printf("Enter command: ");
