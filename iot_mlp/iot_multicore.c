@@ -373,7 +373,9 @@ void update_flow_entry(struct flow_entry *e,
 void handle_packet(struct flow_key *key,
                    uint16_t        pkt_len,
                    uint64_t        now,
-                   uint8_t         flags_count)
+                   uint8_t         flags_count,
+                    float          *aux_a,
+                   float          *aux_b)
 {
     uint32_t index;
     int ret = rte_hash_lookup_data(flow_table, key, (void **)&index);
@@ -455,7 +457,7 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
  static int
  lcore_main(void *args)
  {
-    struct worker_args *w = (struct worker_args *)arg;
+    struct worker_args *w = (struct worker_args *)args;
 
     struct rte_mempool *mbuf_pool = worker_args.mbuf_pool;
     struct rte_hash *flow_table = worker_args.flow_table;
@@ -551,7 +553,7 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
                             // int prediction = predict_mlp(features);
                             // uint64_t start_cycles = rte_rdtsc_precise();
 
-                            handle_packet(&key, pkt_len, pkt_time, flags_count);
+                            handle_packet(&key, pkt_len, pkt_time, flags_count, aux_a, aux_b);
 
                             // uint64_t end_cycles = rte_rdtsc_precise();
                             // uint64_t inference_cycles = end_cycles - start_cycles;
