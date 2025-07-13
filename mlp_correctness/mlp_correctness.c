@@ -75,7 +75,8 @@ static int predict_mlp_c_general(const float *in_features,
             best   = i;
         }
     }
-    return best;
+    float score = in_buf[0];
+    return (score > 0.5f) ? 1 : 0;
 }
 
 // -------------------------------------------------------------------------
@@ -134,7 +135,8 @@ static int predict_mlp_neon_general(const float *in_features,
             best   = i;
         }
     }
-    return best;
+    float score = in_buf[0];
+    return (score > 0.5f) ? 1 : 0;
 }
 
 // -----------------------------------------------------------------------------
