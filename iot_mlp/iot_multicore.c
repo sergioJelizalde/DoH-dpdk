@@ -716,7 +716,7 @@ void handle_packet(struct flow_key *key,
      
      while (1) {
          printf("Enter command: ");
-         scanf("%s", command);
+         scanf("%20s", command);
          // printf("The input command is %s\n",command);
  
          if (strcmp(command, "get_stats") == 0) {
@@ -726,7 +726,7 @@ void handle_packet(struct flow_key *key,
                  char output_file[50]; //= "../datasets/DoHBrw/predictions.txt";
                  
                  printf("Enter file name: ");
-                 scanf("%s", output_file);   
+                 scanf("%20s", output_file);   
  
                  FILE *file = fopen(output_file, "w");
  
