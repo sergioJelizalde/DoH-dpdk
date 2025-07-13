@@ -115,19 +115,25 @@ struct flow_entry flow_pool[MAX_FLOWS];
 
  /* >8 End of launching function on lcore. */
  static inline int
- port_init(uint16_t port, struct rte_mempool *mbuf_pool)
+ port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t rx_rings number_rings)
  {
-     uint16_t nb_queue_pairs = 1;
+
+     uint16_t nb_queue_pairs = number_rings;
      uint16_t rx_rings = nb_queue_pairs, tx_rings = nb_queue_pairs;
+
      uint16_t nb_rxd = RX_RING_SIZE;
      uint16_t nb_txd = TX_RING_SIZE;
+
      uint16_t rx_queue_size = QUEUE_SIZE;
      uint16_t tx_queue_size = QUEUE_SIZE;
+
      int retval;
      uint16_t q;
+
      struct rte_eth_dev_info dev_info;
      struct rte_eth_rxconf rxconf;
      struct rte_eth_txconf txconf;
+
      struct rte_eth_conf port_conf = {
          .rxmode = {
              .mq_mode = RTE_ETH_MQ_RX_RSS,
@@ -175,8 +181,10 @@ struct flow_entry flow_pool[MAX_FLOWS];
              return retval;
      }
  
+
      txconf = dev_info.default_txconf;
      txconf.offloads = port_conf.txmode.offloads;
+
      for (q = 0; q < tx_rings; q++)
      {
          retval = rte_eth_tx_queue_setup(port, q, tx_queue_size,
@@ -184,11 +192,13 @@ struct flow_entry flow_pool[MAX_FLOWS];
          if (retval < 0)
              return retval;
      }
+
      retval = rte_eth_dev_start(port);
      if (retval < 0)
      {
          return retval;
      }
+
      return 0;
  }
  
@@ -442,11 +452,13 @@ struct worker_args {
     struct rte_hash    *flow_table;
     float              *buf_a;
     float              *buf_b;
+    uint16_t            queue_id;    //
     /* add other per-core buffers here if you need them, e.g.: */
     // float *raw_input;
     // float *input;
 };
 static struct worker_args worker_args[RTE_MAX_LCORE];
+
 
  double right_predictions=0;
  double wrong_predictions=0;
@@ -454,6 +466,7 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
  double received_packets=0;
  double processed_packets=0;
  
+
  static int lcore_main(void *args)
  {
     struct worker_args *w = (struct worker_args *)args;
@@ -465,7 +478,8 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
 
      uint16_t port;
      uint16_t ret;
- 
+     uint16_t queue_id = w->queue_id;
+
      struct flow_key key;
      struct flow_entry entry;
  
@@ -485,9 +499,7 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
  
  
      uint32_t pkt_count = 0;
-     uint16_t queue_id =  rte_lcore_id() - 1;
 
- 
      for (;;)
      {
          // port=1;
@@ -495,8 +507,7 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
          {
              struct rte_mbuf *bufs[BURST_SIZE];
              
-             uint16_t nb_rx = rte_eth_rx_burst(port, queue_id,
-                                               bufs, BURST_SIZE);
+             uint16_t nb_rx = rte_eth_rx_burst(port, queue_id, bufs, BURST_SIZE);
  
              // break;
              if (nb_rx > 0)
@@ -656,9 +667,15 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
                                          RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
      if (mbuf_pool == NULL)
          rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
+
+
  
+    unsigned total_lcores = rte_lcore_count(); 
+    uint16_t q = 0;
+
+
      RTE_ETH_FOREACH_DEV(portid)
-     if (port_init(portid, mbuf_pool) != 0)
+     if (port_init(portid, mbuf_pool,total_lcores) != 0)
      {
          rte_exit(EXIT_FAILURE, "Cannot init port %" PRIu16 "\n",
                   portid);
@@ -675,6 +692,7 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
         // share pool and table
         w->mbuf_pool  = mbuf_pool;
         w->flow_table = flow_table;
+        w->queue_id   = q++;
 
         // mlp initialization
         // find maximum neurons 
@@ -687,7 +705,7 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
         if (posix_memalign((void**)&w->buf_a, 16, max_neurons * sizeof(float)) ||
             posix_memalign((void**)&w->buf_b, 16, max_neurons * sizeof(float))) {
             rte_exit(EXIT_FAILURE, "posix_memalign failed\n");
-    }
+        }
 
          rte_eal_remote_launch(lcore_main, w, lcore_id);
      }
