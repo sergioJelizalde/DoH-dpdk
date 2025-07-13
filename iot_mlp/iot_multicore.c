@@ -53,10 +53,10 @@
  #include <arm_neon.h>
  #include "mlp_8.h"
 
-#define RX_RING_SIZE (1 << 15)
-#define TX_RING_SIZE (1 << 15)
+#define RX_RING_SIZE 1024
+#define TX_RING_SIZE 1024
 
-#define NUM_MBUFS (1 << 16)  
+#define NUM_MBUFS 8192  
 
  // #define BURST_SIZE (1 << 9)
  
