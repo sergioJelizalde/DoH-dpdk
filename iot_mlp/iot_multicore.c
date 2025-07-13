@@ -76,6 +76,12 @@
 #define N_PACKETS 8
 #define INVALID_INDEX UINT32_MAX
 
+// mem align for mlp
+static float *aux_a;
+static float *aux_b;
+static float *raw_input;
+static float *input;
+
  typedef struct
  {
      rte_be32_t words[8];
@@ -280,7 +286,7 @@ static void layer_forward_neon(const float *W, const float *B,
     }
     if (is_output) {
         for (int i = 0; i < size_out; i++)
-            out[i] = fast_sigmoid_scalar(out[i]);
+            out[i] = fast_sigmoid(out[i]);
     }
 }
 
