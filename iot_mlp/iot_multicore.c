@@ -447,7 +447,7 @@ void handle_packet(struct flow_key *key,
         };
 
         int prediction = predict_mlp(features, aux_a, aux_b);
-        printf("MLP prediction: %d\n", prediction);
+        //printf("MLP prediction: %d\n", prediction);
 
         /* cleanup flow */
         rte_hash_del_key(flow_table, key);
@@ -603,7 +603,7 @@ void handle_packet(struct flow_key *key,
                 uint64_t hz = rte_get_tsc_hz();
                 double latency_ns = ((double)inference_cycles / hz) * 1e9;
 
-                printf("Latency: %.2f ns (%lu cycles). %d number of packets\n", latency_ns, inference_cycles,nb_rx);
+                //printf("Latency: %.2f ns (%lu cycles). %d number of packets\n", latency_ns, inference_cycles,nb_rx);
                 if (unlikely(nb_rx == 0))
                     continue;
 
