@@ -510,7 +510,6 @@ void handle_packet(struct flow_key *key,
             max_neurons = LAYER_SIZES[i];
 
     // allocate aligned buffers for neon 16bytes (128bits)
-    float *aux_a, *aux_b, *raw_input, *input;
     if (posix_memalign((void**)&aux_a, 16, max_neurons * sizeof(float)) ||
         posix_memalign((void**)&aux_b, 16, max_neurons * sizeof(float)) ||
         posix_memalign((void**)&raw_input, 16, LAYER_SIZES[0] * sizeof(float)) ||
