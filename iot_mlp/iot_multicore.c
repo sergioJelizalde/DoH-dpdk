@@ -374,8 +374,8 @@ void handle_packet(struct flow_key *key,
                    uint16_t        pkt_len,
                    uint64_t        now,
                    uint8_t         flags_count,
-                    float          *aux_a,
-                   float          *aux_b)
+                   float          *aux_a,
+                   float           *aux_b)
 {
     uint32_t index;
     int ret = rte_hash_lookup_data(flow_table, key, (void **)&index);
@@ -454,8 +454,7 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
  double received_packets=0;
  double processed_packets=0;
  
- static int
- lcore_main(void *args)
+ static int lcore_main(void *args)
  {
     struct worker_args *w = (struct worker_args *)args;
 
@@ -463,7 +462,7 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
     struct rte_hash    *flow_table = w->flow_table;
     float *aux_a = w->buf_a;
     float *aux_b = w->buf_b;
-    
+
      uint16_t port;
      uint16_t ret;
  
@@ -647,12 +646,7 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
      }
      
 
-     // mlp initialization
-    // find maximum neurons 
-    int max_neurons = 0;
-    for (int i = 0; i <= NUM_LAYERS; i++)
-        if (LAYER_SIZES[i] > max_neurons)
-            max_neurons = LAYER_SIZES[i];
+   
 
     // allocate aligned buffers for neon 16bytes (128bits)
     if (posix_memalign((void**)&aux_a, 16, max_neurons * sizeof(float)) ||
@@ -691,7 +685,13 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
         // share pool and table
         w->mbuf_pool  = mbuf_pool;
         w->flow_table = flow_table;
-
+        
+        // mlp initialization
+        // find maximum neurons 
+        int max_neurons = 0;
+        for (int i = 0; i <= NUM_LAYERS; i++)
+            if (LAYER_SIZES[i] > max_neurons)
+                max_neurons = LAYER_SIZES[i];
         // allocate *this core’s* NEON buffers
         if (posix_memalign((void**)&w->buf_a, 16, max_neurons * sizeof(float)) ||
             posix_memalign((void**)&w->buf_b, 16, max_neurons * sizeof(float))) {
