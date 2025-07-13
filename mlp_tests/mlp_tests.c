@@ -1,9 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Compare generalized scalar vs NEON-accelerated MLP inference latency
- * over ITERATIONS random input samples with packet-size feature in [64,9000],
- * using DPDK’s TSC, *and* z-score normalization via StandardScaler stats.
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,7 +16,7 @@
 // #include "mlp_128_64_32.h"
 // #include "mlp_256_128_64_32.h"
 
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 #define ITERATIONS      5000
 #define MIN_PKT_SIZE    64.0f
 #define MAX_PKT_SIZE    9000.0f
@@ -43,7 +37,7 @@ static inline float fast_sigmoid_scalar(float x) {
     else                 return 1.0f;
 }
 
-// -----------------------------------------------------------------------------
+// --------------------------------------------------------------------------------
 // Scalar MLP (arbitrary layers)
 static int predict_mlp_c_general(const float *in_features,
                                  float *buf_a, float *buf_b) {
@@ -84,7 +78,7 @@ static int predict_mlp_c_general(const float *in_features,
     return best;
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------------------
 // NEON‐vectorized layer
 static void layer_forward_neon(const float *W, const float *B,
                                const float *in, float *out,
@@ -101,7 +95,7 @@ static void layer_forward_neon(const float *W, const float *B,
         if (!is_output)  acc = vmaxq_f32(acc, vdupq_n_f32(0.0f));
         vst1q_f32(&out[j], acc);
     }
-    // tail scalar
+    // tail scalar in case the model does not align to multiple of 4
     for (; j < size_out; j++) {
         float a = B[j];
         for (int k = 0; k < size_in; k++)
@@ -144,18 +138,18 @@ static int predict_mlp_neon_general(const float *in_features,
 }
 
 // -----------------------------------------------------------------------------
-// ENTRY POINT
+// main program
 int main(int argc, char **argv) {
     if (rte_eal_init(argc, argv) < 0)
         rte_exit(EXIT_FAILURE, "EAL init failed\n");
 
-    // find maximum neurons across all layers
+    // find maximum neurons 
     int max_neurons = 0;
     for (int i = 0; i <= NUM_LAYERS; i++)
         if (LAYER_SIZES[i] > max_neurons)
             max_neurons = LAYER_SIZES[i];
 
-    // allocate aligned buffers
+    // allocate aligned buffers for neon 16bytes (128bits)
     float *scratch_a, *scratch_b, *raw_input, *input;
     if (posix_memalign((void**)&scratch_a, 16, max_neurons * sizeof(float)) ||
         posix_memalign((void**)&scratch_b, 16, max_neurons * sizeof(float)) ||
@@ -173,22 +167,22 @@ int main(int argc, char **argv) {
     const uint64_t hz = rte_get_tsc_hz();
 
     for (int it = 0; it < ITERATIONS; it++) {
-        // 1) generate raw features
+        //  generate raw features
         raw_input[0] = MIN_PKT_SIZE + randomf() * MAX_LEN_RANGE;
         for (int k = 1; k < LAYER_SIZES[0]; k++)
             raw_input[k] = randomf();
 
-        // 2) z-score normalization (exact StandardScaler)
+        //  z-score normalization (from StandardScaler in python)
         for (int k = 0; k < LAYER_SIZES[0]; k++)
             input[k] = (raw_input[k] - FEATURE_MEAN[k]) / FEATURE_STD[k];
 
-        // 3) benchmark scalar
+        // benchmark scalar
         uint64_t t0 = rte_rdtsc_precise();
         predict_mlp_c_general(input, scratch_a, scratch_b);
         uint64_t t1 = rte_rdtsc_precise();
         double ns_c = (double)(t1 - t0) * 1e9 / hz;
 
-        // 4) benchmark NEON
+        // benchmark NEON
         t0 = rte_rdtsc_precise();
         predict_mlp_neon_general(input, scratch_a, scratch_b);
         t1 = rte_rdtsc_precise();

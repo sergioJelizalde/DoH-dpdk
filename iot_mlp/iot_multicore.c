@@ -59,10 +59,10 @@
  #include <arm_neon.h>
  #include "mlp_model.h"
 
- #define RX_RING_SIZE (1 << 15)
- #define TX_RING_SIZE (1 << 15)
- 
- #define NUM_MBUFS (1 << 16)
+#define RX_RING_SIZE  32768U     /* (1 << 15) */
+#define TX_RING_SIZE  32768U
+#define NUM_MBUFS     65536U     /* (1 << 16) */
+
  // #define BURST_SIZE (1 << 9)
  
  #define QUEUE_SIZE 128
@@ -97,82 +97,6 @@
      return((uint16_t)value.bytes[1] << 8)| value.bytes[2];
  }
  
- struct tls_hdr
- {
-     uint8_t type;
-     uint16_t version;
-     uint16_t len;
- };
- 
- struct rte_tls_hdr
- {
-     uint8_t type;
-     rte_be16_t version;
-     rte_be16_t length;
- } __attribute__((__packed__));
- 
- struct rte_tls_hello_hdr
- {
-     uint8_t type;
-     uint24_t len;
-     rte_be16_t version;
-     uint256_t random;
- } __attribute__((__packed__));
- 
- struct rte_tls_session_hdr
- {
-     uint8_t len;
- } __attribute__((__packed__));
- 
- struct rte_tls_cipher_hdr
- {
-     uint16_t len;
- } __attribute__((__packed__));
- 
- struct rte_tls_compression_hdr
- {
-     uint8_t len;
- } __attribute__((__packed__));
- 
- struct rte_tls_ext_len_hdr
- {
-     uint16_t len;
- } __attribute__((__packed__));
- 
- struct rte_tls_ext_hdr
- {
-     uint16_t type;
-     uint16_t len;
- } __attribute__((__packed__));
- 
- struct rte_ctls_ext_sni_hdr
- {
-     uint16_t sni_list_len;
-     uint8_t type;
-     uint16_t sni_len;
- } __attribute__((__packed__));
- 
- struct rte_server_name
- {
-     uint16_t name;
- } __attribute__((__packed__));
- 
- 
- struct rte_client_hello_dpdk_hdr
- {
-     uint8_t type;
-     uint16_t len;
-     uint16_t exts_num;
- } __attribute__((__packed__));
- 
- struct rte_server_hello_dpdk_hdr
- {
-     uint8_t type;
-     uint16_t len;
-     uint16_t exts_num;
-     uint16_t version;
- } __attribute__((__packed__));
- 
  struct flow_key {
     uint32_t src_ip;
     uint32_t dst_ip;
@@ -182,34 +106,27 @@
 } __attribute__((packed));
 
 struct flow_entry {
-    uint16_t len_min;
-    uint16_t len_max;
-    uint64_t total_len;
-
     uint64_t first_timestamp;
     uint64_t last_timestamp;
+
+    uint16_t pkt_count;
+
+    /* packet‐length stats */
+    uint32_t len_min;
+    uint32_t len_max;
+    uint64_t len_sum;      // for computing mean
+
+    /* inter‐arrival time (IAT) stats */
     uint64_t iat_min;
     uint64_t iat_max;
-    uint32_t pkt_count;
+    uint64_t iat_sum;      // for computing mean
+
+    /* total bytes in flow (you already had: total_len) */
+    uint64_t total_len;
+
+    /* sum of '1' bits in the TCP flags field */
+    uint32_t flag_bits_sum;
 };
-
-typedef struct {
-    int n_nodes;
-    int left_child;
-    int right_child;
-    int feature;
-    double threshold;
-    int is_leaf;
-    int class_label;
-} TreeNode;
-
-// Structure to hold random forest model
-typedef struct {
-    int n_estimators;
-    int max_depth;
-    double feature_importances[5];
-    TreeNode trees[MAX_TREES][MAX_NODES];
-} RandomForest;
 
 struct rte_hash *flow_table;
 struct rte_hash_parameters hash_params = {0};
@@ -333,114 +250,6 @@ get_hw_timestamp(const struct rte_mbuf *mbuf)
 // End of HW timetamps
 
 
- // Function to read the JSON file and load the Random Forest model
- int load_rf_model(const char *filename, RandomForest *rf) {
-     json_error_t error;
-     json_t *root = json_load_file(filename, 0, &error);
- 
-     if (!root) {
-         fprintf(stderr, "Error loading JSON file: %s\n", error.text);
-         return -1;
-     }
- 
-     // Parse the general model parameters
-     json_t *n_estimators = json_object_get(root, "n_estimators");
-     json_t *max_depth = json_object_get(root, "max_depth");
-     json_t *feature_importances = json_object_get(root, "feature_importances");
- 
-     rf->n_estimators = json_integer_value(n_estimators);
-     rf->max_depth = json_integer_value(max_depth);
- 
-     // Parse feature importances
-     for (int i = 0; i < 5; i++) {
-         rf->feature_importances[i] = json_real_value(json_array_get(feature_importances, i));
-     }
- 
-     // Parse each decision tree
-     json_t *estimators = json_object_get(root, "estimators");
-     size_t index;
-     json_t *tree_data;
- 
-     json_array_foreach(estimators, index, tree_data) {
-         TreeNode *tree = rf->trees[index];
-         size_t n_nodes = json_integer_value(json_object_get(tree_data, "n_nodes"));
- 
-         // Parse the nodes of the tree
-         json_t *children_left = json_object_get(tree_data, "children_left");
-         json_t *children_right = json_object_get(tree_data, "children_right");
-         json_t *feature = json_object_get(tree_data, "feature");
-         json_t *threshold = json_object_get(tree_data, "threshold");
-         json_t *class_label = json_object_get(tree_data, "class_label"); // Holds the class probabilities/counts
-         json_t *leaves = json_object_get(tree_data, "leaves");
- 
-         for (int i = 0; i < n_nodes; i++) {
-             TreeNode *node = &tree[i];
-             node->feature = json_integer_value(json_array_get(feature, i));
-             node->threshold = json_real_value(json_array_get(threshold, i));
-             node->left_child = json_integer_value(json_array_get(children_left, i));
-             node->right_child = json_integer_value(json_array_get(children_right, i));
-             node->class_label = json_integer_value(json_array_get(class_label, i));
-             node->is_leaf = json_integer_value(json_array_get(leaves, i));
-         }
-     }
- 
-     json_decref(root);
-     return 0;
- }
- 
- // Function to traverse a tree and make a prediction
- int predict_tree(TreeNode *tree, double *sample, int node_index) {
-     TreeNode *node = &tree[node_index];
- 
-     if (node->is_leaf) {
-         return node->class_label;
-     }
- 
-     if (sample[node->feature] <= node->threshold) {
-         return predict_tree(tree, sample, node->left_child);
-     } else {
-         return predict_tree(tree, sample, node->right_child);
-     }
- }
-
- int predict_rf(RandomForest *rf, double *sample) {
-     if (rf == NULL || rf->n_estimators <= 0) {
-         return -1; // Error or empty forest
-     }
- 
-     int count[3] = {0};
- 
-     for (int i = 0; i < rf->n_estimators; i++) {
-         int prediction = predict_tree(rf->trees[i], sample, 0);
-         if (prediction >= 0 && prediction < 3) {
-             count[prediction]++;
-         }
-     }
- 
-     // Find the majority class
-     int final_prediction = 0;
-     int max_votes = count[0];
- 
-     for (int i = 1; i < 3; i++) {
-         if (count[i] > max_votes) {
-             final_prediction = i;
-             max_votes = count[i];
-         }
-     }
- 
-     return final_prediction;
- }
- 
-// ReLU activation for vector of 4 floats
-static inline float32x4_t relu4(float32x4_t x) {
-    return vmaxq_f32(x, vdupq_n_f32(0.0f));
-}
-
-// ReLU for scalar
-static inline float relu(float x) {
-    return (x > 0.0f) ? x : 0.0f;
-}
-
 // Fast piecewise sigmoid approximation
 static inline float fast_sigmoid(float x) {
     if (x <= -4.0f) return 0.0f;
@@ -451,42 +260,66 @@ static inline float fast_sigmoid(float x) {
     else return 1.0f;
 }
 
-// Perform MLP inference with fixed structure: 
-// Returns 0 or 1 (binary class)
-static inline int predict_mlp(const float input[4]) {
-    float hidden1[8], hidden2[4];
-
-    // Layer 1: 
-    for (int j = 0; j < 8; j += 4) {
-        float32x4_t acc = vld1q_f32(&B0[j]);
-        for (int i = 0; i < 4; i++) {
-            float32x4_t w = vld1q_f32(&W0[i * 8 + j]);
-            float32x4_t x = vdupq_n_f32(input[i]);
-            acc = vfmaq_f32(acc, x, w);
+// -------------------------------------------------------------------------
+// NEON‐vectorized layer
+static void layer_forward_neon(const float *W, const float *B,
+                               const float *in, float *out,
+                               int size_in, int size_out,
+                               int is_output) {
+    int j = 0;
+    for (; j + 4 <= size_out; j += 4) {
+        float32x4_t acc = vld1q_f32(&B[j]);
+        for (int k = 0; k < size_in; k++) {
+            acc = vfmaq_f32(acc,
+                            vdupq_n_f32(in[k]),
+                            vld1q_f32(&W[k*size_out + j]));
         }
-        acc = relu4(acc);
-        vst1q_f32(&hidden1[j], acc);
-        
+        if (!is_output)  acc = vmaxq_f32(acc, vdupq_n_f32(0.0f));
+        vst1q_f32(&out[j], acc);
     }
-
-    // Layer 2:
-    for (int j = 0; j < 4; j++) {
-        float acc = B1[j];
-        for (int i = 0; i < 8; i++) {
-            acc += W1[i * 4 + j] * hidden1[i];
-        }
-        hidden2[j] = relu(acc);
+    // tail scalar in case the model does not align to multiple of 4
+    for (; j < size_out; j++) {
+        float a = B[j];
+        for (int k = 0; k < size_in; k++)
+            a += W[k*size_out + j] * in[k];
+        out[j] = is_output ? a : (a > 0.0f ? a : 0.0f);
     }
-
-    // Output
-    float acc = B2[0];
-    for (int i = 0; i < 4; i++) {
-        acc += W2[i] * hidden2[i];
+    if (is_output) {
+        for (int i = 0; i < size_out; i++)
+            out[i] = fast_sigmoid_scalar(out[i]);
     }
-
-    float y = fast_sigmoid(acc);
-    return (y > 0.5f) ? 1 : 0;
 }
+
+// NEON MLP over arbitrary layers
+static int predict_mlp(const float *in_features,
+                                    float *buf_a, float *buf_b) {
+    float *in_buf  = buf_a, *out_buf = buf_b;
+    memcpy(in_buf, in_features, LAYER_SIZES[0] * sizeof(float));
+
+    for (int L = 0; L < NUM_LAYERS; L++) {
+        layer_forward_neon(
+          WEIGHTS[L], BIASES[L],
+          in_buf, out_buf,
+          LAYER_SIZES[L],
+          LAYER_SIZES[L+1],
+          (L == NUM_LAYERS - 1)
+        );
+        float *tmp = in_buf; in_buf = out_buf; out_buf = tmp;
+    }
+
+    // argmax
+    int final_size = LAYER_SIZES[NUM_LAYERS], best = 0;
+    float best_v = in_buf[0];
+    for (int i = 1; i < final_size; i++) {
+        if (in_buf[i] > best_v) {
+            best_v = in_buf[i];
+            best   = i;
+        }
+    }
+    return best;
+}
+//--------------------------------------------------------------------------
+
 
  static inline uint32_t allocate_entry() {
     for (uint32_t i = 0; i < MAX_FLOWS; i++) {
@@ -505,30 +338,62 @@ static inline void reset_entry(uint32_t idx) {
 }
 
 
-void update_flow_entry(struct flow_entry *entry, uint16_t pkt_len, uint64_t now_cycles) {
-    uint64_t iat = (entry->pkt_count > 0) ? (now_cycles - entry->last_timestamp) : 0;
+static inline uint8_t
+count_bits(uint8_t x) {
+    // GCC/Clang builtin popcount
+    return __builtin_popcount(x);
+}
 
-    if (entry->pkt_count == 0) {
-        entry->len_min = pkt_len;
-        entry->len_max = pkt_len;
-        entry->first_timestamp = now_cycles;
-        entry->total_len = pkt_len;
+void update_flow_entry(struct flow_entry *e,
+                       uint16_t    pkt_len,
+                       uint64_t    now_cycles,
+                       uint8_t     tcp_flags_count)
+{
+    uint64_t iat = (e->pkt_count > 0)
+                   ? (now_cycles - e->last_timestamp)
+                   : 0;
+
+    if (e->pkt_count == 0) {
+        e->len_min   = pkt_len;
+        e->len_max   = pkt_len;
+        e->len_sum   = pkt_len;
+
+        e->iat_min   = UINT64_MAX;
+        e->iat_max   = 0;
+        e->iat_sum   = 0;
+
+        e->first_timestamp = now_cycles;
+        e->total_len       = pkt_len;
+
+        e->flag_bits_sum   = tcp_flags_count;
     } else {
-        if (pkt_len < entry->len_min) entry->len_min = pkt_len;
-        if (pkt_len > entry->len_max) entry->len_max = pkt_len;
-        entry->total_len += pkt_len;
+        /* length stats */
+        if (pkt_len < e->len_min) e->len_min = pkt_len;
+        if (pkt_len > e->len_max) e->len_max = pkt_len;
+        e->len_sum += pkt_len;
 
-        if (iat < entry->iat_min) entry->iat_min = iat;
-        if (iat > entry->iat_max) entry->iat_max = iat;
+        /* IAT stats */
+        if (iat < e->iat_min) e->iat_min = iat;
+        if (iat > e->iat_max) e->iat_max = iat;
+        e->iat_sum += iat;
+
+        /* total bytes */
+        e->total_len += pkt_len;
+
+        /* flag bits sum */
+        e->flag_bits_sum += tcp_flags_count;
     }
 
-    entry->last_timestamp = now_cycles;
-    entry->pkt_count++;
+    e->last_timestamp = now_cycles;
+    e->pkt_count++;
 }
 
 
-void handle_packet(struct flow_key *key, uint16_t pkt_len, uint64_t now, RandomForest *rf) {
-    struct flow_entry *entry = NULL;
+void handle_packet(struct flow_key *key,
+                   uint16_t        pkt_len,
+                   uint64_t        now,
+                   uint8_t         flags_count)
+{
     uint32_t index;
     int ret = rte_hash_lookup_data(flow_table, key, (void **)&index);
 
@@ -544,38 +409,51 @@ void handle_packet(struct flow_key *key, uint16_t pkt_len, uint64_t now, RandomF
         }
     }
 
-    entry = &flow_pool[index];
-    update_flow_entry(entry, pkt_len, now);
+    struct flow_entry *entry = &flow_pool[index];
 
-    if (entry->pkt_count >= N_PACKETS) {
-        uint64_t hz = rte_get_tsc_hz();
-        printf("TSC frequency: %lu Hz\n", hz);
+    /* update all stats*/
+    update_flow_entry(entry, pkt_len, now, flags_count);
 
-        float features[4] = {
-            (float)entry->total_len,
-            (float)(entry->len_max - entry->len_min),
-            (float)((entry->last_timestamp - entry->first_timestamp) / (double)hz * 1e6),
-            (float)((entry->iat_max - entry->iat_min) / (double)hz * 1e6)
+    /* once we have N_PACKETS, compute features and predict */
+    if (e->pkt_count >= N_PACKETS) {
+        double hz = (double)rte_get_tsc_hz();
+
+        /* compute means */
+        float mean_len = (float)(e->len_sum   / (double)e->pkt_count);
+        float mean_iat = (float)(e->iat_sum   / (double)(e->pkt_count - 1)) * 1e6 / hz;  // in µs
+
+        /* range in µs */
+        float duration_us =
+          (float)((e->last_timestamp - e->first_timestamp) / hz * 1e6);
+
+        /* build your feature vector: */
+        float features[] = {
+            /* packet‐length features (bytes) */
+            (float)e->len_min,
+            (float)e->len_max,
+            mean_len,
+
+            /* IAT features (µs) */
+            (float)(e->iat_min / hz * 1e6),
+            (float)(e->iat_max / hz * 1e6),
+            mean_iat,
+
+            /* total bytes*/
+            (float)e->total_len,
+
+            /* TCP flag‐bit sum */
+            (float)e->flag_bits_sum
         };
 
-        // uint64_t start_cycles = rte_rdtsc_precise();
-        // printf("TSC frequency: %lu Hz\n", hz);
-
-        int prediction = predict_mlp(features);
+        int prediction = predict_mlp(features, aux_a, aux_b);
         printf("MLP prediction: %d\n", prediction);
-        // uint64_t end_cycles = rte_rdtsc_precise();
-        // uint64_t inference_cycles = end_cycles - start_cycles;
 
-        // // Convert to nanoseconds
-        // double latency_ns = ((double)inference_cycles / hz) * 1e9;
-
-        // printf("Latency: %.2f ns (%lu cycles)\n", latency_ns, inference_cycles);
-
+        /* cleanup flow */
         rte_hash_del_key(flow_table, key);
         reset_entry(index);
     }
-
 }
+
 
  struct
  {
@@ -624,7 +502,24 @@ void handle_packet(struct flow_key *key, uint16_t pkt_len, uint64_t now, RandomF
  
      uint32_t pkt_count = 0;
      uint16_t queue_id =  rte_lcore_id() - 1;
- 
+    
+
+// find maximum neurons 
+    int max_neurons = 0;
+    for (int i = 0; i <= NUM_LAYERS; i++)
+        if (LAYER_SIZES[i] > max_neurons)
+            max_neurons = LAYER_SIZES[i];
+
+    // allocate aligned buffers for neon 16bytes (128bits)
+    float *aux_a, *aux_b, *raw_input, *input;
+    if (posix_memalign((void**)&aux_a, 16, max_neurons * sizeof(float)) ||
+        posix_memalign((void**)&aux_b, 16, max_neurons * sizeof(float)) ||
+        posix_memalign((void**)&raw_input, 16, LAYER_SIZES[0] * sizeof(float)) ||
+        posix_memalign((void**)&input,     16, LAYER_SIZES[0] * sizeof(float)))
+    {
+        rte_exit(EXIT_FAILURE, "posix_memalign failed\n");
+    }
+
  
      for (;;)
      {
@@ -644,16 +539,7 @@ void handle_packet(struct flow_key *key, uint16_t pkt_len, uint64_t now, RandomF
                  struct rte_ether_hdr *ethernet_header; 
                  struct rte_ipv4_hdr *pIP4Hdr;
                  struct rte_tcp_hdr *pTcpHdr;
-                 struct rte_tls_hdr *pTlsHdr;
-                 struct rte_tls_hdr *pTlsRecord1;
-                 struct rte_tls_hdr *pTlsRecord2;
-                 struct rte_tls_hello_hdr *pTlsHandshakeHdr;
-                 struct rte_tls_session_hdr *pTlsSessionHdr;
-                 struct rte_tls_cipher_hdr *pTlsChiperHdr;
-                 struct rte_tls_compression_hdr *pTlsCmpHdr;
-                 struct rte_tls_ext_len_hdr *pTlsExtLenHdr;
-                 struct rte_tls_ext_hdr *pTlsExtHdr;
- 
+              
                  u_int16_t ethernet_type;
                  for (int i = 0; i < nb_rx; i++)
                  {
@@ -680,40 +566,35 @@ void handle_packet(struct flow_key *key, uint16_t pkt_len, uint64_t now, RandomF
                              uint16_t src_port = rte_be_to_cpu_16(pTcpHdr->src_port);
                              uint8_t tcp_dataoffset = pTcpHdr->data_off >> 4;
                              uint32_t tcpdata_offset = ipdata_offset + sizeof(struct rte_tcp_hdr) + (tcp_dataoffset - 5) * 4;
-                             if (dst_port == 443 || src_port == 443)
-                             {
- 
-                                 pTlsHdr = rte_pktmbuf_mtod_offset(bufs[i], struct rte_tls_hdr *, tcpdata_offset);
-                                 uint8_t tls_type = pTlsHdr->type;
-                                 uint32_t tlsdata_offset = tcpdata_offset + sizeof(struct rte_tls_hdr);
+                               /* figure out how many ‘1’ bits are set in TCP flags, or 0 otherwise */
+                               // integrate code below with down code
+                            uint8_t flags_count = __builtin_popcount(pTcpHdr->tcp_flags);
 
-                                if (tls_type == 0x17)
-                                {
-                                    //printf("This is a application data packet");
-                                    key.src_ip = dst_ip;  
-                                    key.dst_ip = src_ip; 
-                                    key.src_port = dst_port;
-                                    key.dst_port = src_port;
-                                    key.protocol = IPv4NextProtocol;
 
-                                    uint16_t pkt_len = pIP4Hdr->total_length;
-                                    uint64_t pkt_time = is_timestamp_enabled(bufs[i]) ? get_hw_timestamp(bufs[i]) : 0;    
-                                    // printf("TSC frequency: %lu Hz\n", hz);
-                                    
-                                    // int prediction = predict_mlp(features);
-                                    // uint64_t start_cycles = rte_rdtsc_precise();
+                            //printf("This is a application data packet");
+                            key.src_ip = dst_ip;  
+                            key.dst_ip = src_ip; 
+                            key.src_port = dst_port;
+                            key.dst_port = src_port;
+                            key.protocol = IPv4NextProtocol;
 
-                                    handle_packet(&key, pkt_len, pkt_time, rf);
+                            uint16_t pkt_len = pIP4Hdr->total_length;
+                            uint64_t pkt_time = is_timestamp_enabled(bufs[i]) ? get_hw_timestamp(bufs[i]) : 0;    
+                            // printf("TSC frequency: %lu Hz\n", hz);
+                            
+                            // int prediction = predict_mlp(features);
+                            // uint64_t start_cycles = rte_rdtsc_precise();
 
-                                    // uint64_t end_cycles = rte_rdtsc_precise();
-                                    // uint64_t inference_cycles = end_cycles - start_cycles;
+                            handle_packet(&key, pkt_len, pkt_time,flags_count);
 
-                                    // // Convert to nanoseconds
-                                    // double latency_ns = ((double)inference_cycles / hz) * 1e9;
+                            // uint64_t end_cycles = rte_rdtsc_precise();
+                            // uint64_t inference_cycles = end_cycles - start_cycles;
 
-                                    // printf("Latency: %.2f ns (%lu cycles)\n", latency_ns, inference_cycles);                                       
-                                }
-                            }
+                            // // Convert to nanoseconds
+                            // double latency_ns = ((double)inference_cycles / hz) * 1e9;
+
+                            // printf("Latency: %.2f ns (%lu cycles)\n", latency_ns, inference_cycles);                                       
+                          
                         }
                     }
                 }
@@ -728,8 +609,7 @@ void handle_packet(struct flow_key *key, uint16_t pkt_len, uint64_t now, RandomF
                 if (unlikely(nb_rx == 0))
                     continue;
 
-                const uint16_t nb_tx = rte_eth_tx_burst(port, queue_id,
-                                                        bufs, nb_rx);
+                const uint16_t nb_tx = rte_eth_tx_burst(port, queue_id, bufs, nb_rx);
 
                 processed_packets += nb_tx;
 
@@ -785,9 +665,6 @@ void handle_packet(struct flow_key *key, uint16_t pkt_len, uint64_t now, RandomF
      ret = rte_eal_init(argc, argv);
      if (ret < 0)
          rte_panic("Cannot init EAL\n");
- 
- 
-
 
      hash_params.name = "flow_table";
      hash_params.entries = MAX_FLOWS;
@@ -800,7 +677,10 @@ void handle_packet(struct flow_key *key, uint16_t pkt_len, uint64_t now, RandomF
      if (!flow_table) {
          rte_panic("Failed to create hash table\n");
      }
- 
+     
+
+     // mlp initialization
+    
      argc -= ret;
      argv += ret;
  
@@ -822,18 +702,9 @@ void handle_packet(struct flow_key *key, uint16_t pkt_len, uint64_t now, RandomF
          printf("port %u initialized\n",portid);
      };
  
-     
-     RandomForest rf;
- 
-     // Load the model from the JSON file
-     if (load_rf_model("rf_model.json", &rf) != 0) {
-         return -1;
-     }
- 
-   
+    
      worker_args.mbuf_pool = mbuf_pool;
      worker_args.flow_table = flow_table;
-     worker_args.rf = &rf;
  
      RTE_LCORE_FOREACH_WORKER(lcore_id)
      {
