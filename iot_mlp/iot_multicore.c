@@ -62,11 +62,11 @@
  
  #define QUEUE_SIZE 256
  
- #define BURST_SIZE 128
+ #define BURST_SIZE 64
  
  // #define QUEUE_SIZE (1 << 6)
  
- #define MBUF_CACHE_SIZE 256
+ #define MBUF_CACHE_SIZE 512
  
  //#define HASH_TABLE_SIZE (1 << 15) 
  
