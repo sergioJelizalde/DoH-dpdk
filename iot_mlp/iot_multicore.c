@@ -77,26 +77,8 @@
 #define N_PACKETS 8
 #define INVALID_INDEX UINT32_MAX
 
-// mem align for mlp
-static float *aux_a;
-static float *aux_b;
 
- typedef struct
- {
-     rte_be32_t words[8];
- } uint256_t;
- 
- typedef struct
- {
-     uint8_t bytes[3];
- } uint24_t;
- 
- uint16_t uint24_to_16(uint24_t value);
- uint16_t uint24_to_16(uint24_t value){
-     return((uint16_t)value.bytes[1] << 8)| value.bytes[2];
- }
- 
- struct flow_key {
+struct flow_key {
     uint32_t src_ip;
     uint32_t dst_ip;
     uint16_t src_port;
@@ -444,7 +426,7 @@ void handle_packet(struct flow_key *key,
             (float)e->flag_bits_sum
         };
 
-        int prediction = predict_mlp(features, w->buf_a, w->buf_b);
+        int prediction = predict_mlp(features, aux_a, aux_b);
         //printf("MLP prediction: %d\n", prediction);
 
         /* cleanup flow */
@@ -453,16 +435,17 @@ void handle_packet(struct flow_key *key,
     }
 }
 
-
- struct
- {
+struct worker_args {
     struct rte_mempool *mbuf_pool;
-    struct rte_hash *flow_table;
-    float             *buf_a;
-    float             *buf_b;
-    int packet_counters[10];
- }worker_args[RTE_MAX_LCORE];
- 
+    struct rte_hash    *flow_table;
+    float              *buf_a;
+    float              *buf_b;
+    /* add other per-core buffers here if you need them, e.g.: */
+    // float *raw_input;
+    // float *input;
+};
+static struct worker_args worker_args[RTE_MAX_LCORE];
+
  double right_predictions=0;
  double wrong_predictions=0;
  
@@ -472,14 +455,13 @@ void handle_packet(struct flow_key *key,
  static int
  lcore_main(void *args)
  {
-    // struct worker_args *w_args = (struct worker_args *)args;
+    struct worker_args *w = (struct worker_args *)arg;
+
     struct rte_mempool *mbuf_pool = worker_args.mbuf_pool;
     struct rte_hash *flow_table = worker_args.flow_table;
-    struct worker_args *w = arg;       
+    float *aux_a = w->buf_a;
+    float *aux_b = w->buf_b;   
 
-     // int core_id = rte_lcore_id();
-     // int *packet_counter = &worker_args.packet_counters[core_id];
- 
      uint16_t port;
      uint16_t ret;
  
