@@ -115,7 +115,7 @@ struct flow_entry flow_pool[MAX_FLOWS];
 
  /* >8 End of launching function on lcore. */
  static inline int
- port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t rx_rings number_rings)
+ port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t number_rings)
  {
 
      uint16_t nb_queue_pairs = number_rings;
