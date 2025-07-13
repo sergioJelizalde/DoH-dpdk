@@ -453,7 +453,6 @@ void handle_packet(struct flow_key *key,
  {
      struct rte_mempool *mbuf_pool;
      struct rte_hash *flow_table;
-     RandomForest *rf;
      int packet_counters[10];
  }worker_args;
  
@@ -469,7 +468,6 @@ void handle_packet(struct flow_key *key,
      // struct worker_args *w_args = (struct worker_args *)args;
      struct rte_mempool *mbuf_pool = worker_args.mbuf_pool;
      struct rte_hash *flow_table = worker_args.flow_table;
-     RandomForest *rf = worker_args.rf;
      // int core_id = rte_lcore_id();
      // int *packet_counter = &worker_args.packet_counters[core_id];
  
