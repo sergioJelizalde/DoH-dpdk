@@ -51,7 +51,12 @@
  
  //for bluefield2
  #include <arm_neon.h>
+
  #include "mlp_8.h"
+// #include "mlp_32.h"
+// #include "mlp_64_32.h"
+// #include "mlp_128_64_32.h"
+// #include "mlp_256_128_64_32.h"
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -561,7 +566,7 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
                             // int prediction = predict_mlp(features);
                             // uint64_t start_cycles = rte_rdtsc_precise();
 
-                            // handle_packet(&key, pkt_len, pkt_time, flags_count, aux_a, aux_b);
+                            handle_packet(&key, pkt_len, pkt_time, flags_count, aux_a, aux_b);
 
                             // uint64_t end_cycles = rte_rdtsc_precise();
                             // uint64_t inference_cycles = end_cycles - start_cycles;
