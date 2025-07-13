@@ -409,10 +409,10 @@ void handle_packet(struct flow_key *key,
         }
     }
 
-    struct flow_entry *entry = &flow_pool[index];
+    struct flow_entry *e = &flow_pool[index];
 
     /* update all stats*/
-    update_flow_entry(entry, pkt_len, now, flags_count);
+    update_flow_entry(e, pkt_len, now, flags_count);
 
     /* once we have N_PACKETS, compute features and predict */
     if (e->pkt_count >= N_PACKETS) {
