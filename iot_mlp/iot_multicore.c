@@ -459,11 +459,11 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
  {
     struct worker_args *w = (struct worker_args *)args;
 
-    struct rte_mempool *mbuf_pool = worker_args.mbuf_pool;
-    struct rte_hash *flow_table = worker_args.flow_table;
+    struct rte_mempool *mbuf_pool = w->mbuf_pool;
+    struct rte_hash    *flow_table = w->flow_table;
     float *aux_a = w->buf_a;
-    float *aux_b = w->buf_b;   
-
+    float *aux_b = w->buf_b;
+    
      uint16_t port;
      uint16_t ret;
  
