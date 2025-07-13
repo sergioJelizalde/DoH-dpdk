@@ -56,7 +56,7 @@
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
 
-#define NUM_MBUFS 8192  
+#define NUM_MBUFS 8191 
 
  // #define BURST_SIZE (1 << 9)
  
@@ -70,8 +70,6 @@
  
  //#define HASH_TABLE_SIZE (1 << 15) 
  
- #define MAX_TREES 100
- #define MAX_NODES 500
 
 #define MAX_FLOWS 16384 
 #define N_PACKETS 8
@@ -709,6 +707,20 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
 
          rte_eal_remote_launch(lcore_main, w, lcore_id);
      }
+
+     {
+        unsigned master_id = rte_lcore_id();
+        struct worker_args *w = &worker_args[master_id];
+        w->mbuf_pool  = mbuf_pool;
+        w->flow_table = flow_table;
+        w->queue_id   = q;
+
+        posix_memalign((void**)&w->buf_a, 16, max_neurons * sizeof(float));
+        posix_memalign((void**)&w->buf_b, 16, max_neurons * sizeof(float));
+
+        lcore_main(w);   // call in the master thread
+    }
+    
  
      char command[50];
      
