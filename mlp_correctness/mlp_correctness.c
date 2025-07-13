@@ -165,7 +165,7 @@ int main(int argc, char **argv) {
 
     srand((unsigned)rte_get_tsc_cycles());
     const uint64_t hz = rte_get_tsc_hz();
-
+    int matches = 0, mismatches = 0;
     for (int it = 0; it < ITERATIONS; it++) {
         //  generate raw features
         raw_input[0] = MIN_PKT_SIZE + randomf() * MAX_LEN_RANGE;
@@ -178,18 +178,22 @@ int main(int argc, char **argv) {
 
         // benchmark scalar
         uint64_t t0 = rte_rdtsc_precise();
-        predict_mlp_c_general(input, scratch_a, scratch_b);
+        int cls_c = predict_mlp_c_general(input, scratch_a, scratch_b);
         uint64_t t1 = rte_rdtsc_precise();
         double ns_c = (double)(t1 - t0) * 1e9 / hz;
 
         // benchmark NEON
         t0 = rte_rdtsc_precise();
-        predict_mlp_neon_general(input, scratch_a, scratch_b);
+        int cls_n = predict_mlp_neon_general(input, scratch_a, scratch_b);
         t1 = rte_rdtsc_precise();
         double ns_n = (double)(t1 - t0) * 1e9 / hz;
 
+        if (cls_c == cls_n)       matches++;
+        else                      mismatches++;
+    
         fprintf(out, "%d,%.2f,%.2f\n", it, ns_c, ns_n);
     }
+    printf("Decision agreement: %d/%d matches (%d mismatches)\n", matches, ITERATIONS, mismatches);
 
     fclose(out);
     free(scratch_a);
