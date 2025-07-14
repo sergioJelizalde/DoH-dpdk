@@ -145,16 +145,14 @@ static struct rte_hash *flow_tables[MAX_CORES];
 
      int retval;
      uint16_t q;
-    printf("max_rx_queues = %u, you asked for %u\n",
-       dev_info.max_rx_queues, number_rings);
-       
+
      struct rte_eth_dev_info dev_info;
      struct rte_eth_rxconf rxconf;
      struct rte_eth_txconf txconf;
 
      struct rte_eth_conf port_conf = {
          .rxmode = {
-             .mq_mode = RTE_ETH_MQ_RX_RSS,
+             //.mq_mode = RTE_ETH_MQ_RX_RSS,
              .offloads = RTE_ETH_RX_OFFLOAD_TIMESTAMP,
          },
          .rx_adv_conf = {
