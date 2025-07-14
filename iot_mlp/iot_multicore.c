@@ -280,6 +280,19 @@ get_hw_timestamp(const struct rte_mbuf *mbuf)
 // End of HW timetamps
 
 
+
+
+
+// Fast piecewise sigmoid approximation
+static inline float fast_sigmoid(float x) {
+    if (x <= -4.0f) return 0.0f;
+    else if (x <= -2.0f) return 0.0625f * x + 0.25f;
+    else if (x <= 0.0f)  return 0.125f * x + 0.5f;
+    else if (x <= 2.0f)  return -0.125f * x + 0.5f;
+    else if (x <= 4.0f)  return -0.0625f * x + 0.75f;
+    else return 1.0f;
+}
+
 // Scalar MLP (arbitrary layers)
 static int predict_mlp_c_general(const float *in_features,
                                  float *buf_a, float *buf_b) {
@@ -300,7 +313,7 @@ static int predict_mlp_c_general(const float *in_features,
             for (int k = 0; k < size_in; k++)
                 acc += W[k*size_out + j] * in_buf[k];
             out_buf[j] = is_output
-                       ? fast_sigmoid_scalar(acc)
+                       ? fast_sigmoid(acc)
                        : (acc > 0.0f ? acc : 0.0f);
         }
 
@@ -319,17 +332,6 @@ static int predict_mlp_c_general(const float *in_features,
     }
     float score = in_buf[0];
     return (score > 0.5f) ? 1 : 0;
-}
-
-
-// Fast piecewise sigmoid approximation
-static inline float fast_sigmoid(float x) {
-    if (x <= -4.0f) return 0.0f;
-    else if (x <= -2.0f) return 0.0625f * x + 0.25f;
-    else if (x <= 0.0f)  return 0.125f * x + 0.5f;
-    else if (x <= 2.0f)  return -0.125f * x + 0.5f;
-    else if (x <= 4.0f)  return -0.0625f * x + 0.75f;
-    else return 1.0f;
 }
 
 // -------------------------------------------------------------------------
