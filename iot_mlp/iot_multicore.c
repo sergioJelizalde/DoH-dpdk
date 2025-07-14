@@ -145,7 +145,9 @@ static struct rte_hash *flow_tables[MAX_CORES];
 
      int retval;
      uint16_t q;
-
+    printf("max_rx_queues = %u, you asked for %u\n",
+       dev_info.max_rx_queues, number_rings);
+       
      struct rte_eth_dev_info dev_info;
      struct rte_eth_rxconf rxconf;
      struct rte_eth_txconf txconf;
