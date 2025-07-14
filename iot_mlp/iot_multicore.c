@@ -75,6 +75,7 @@
  
  //#define HASH_TABLE_SIZE (1 << 15) 
  
+#define ALIGN16 __attribute__((aligned(16)))
 
 #define N_PACKETS 8
 #define INVALID_INDEX   UINT32_MAX
@@ -509,7 +510,7 @@ void handle_packet(struct flow_key *key,
           (float)((e->last_timestamp - e->first_timestamp) / hz * 1e6);
 
         /* build your feature vector: */
-        float features[] = {
+        ALIGN16 float features[] = {
             /* packet‐length features (bytes) */
             (float)e->len_min,
             (float)e->len_max,
