@@ -280,6 +280,48 @@ get_hw_timestamp(const struct rte_mbuf *mbuf)
 // End of HW timetamps
 
 
+// Scalar MLP (arbitrary layers)
+static int predict_mlp_c_general(const float *in_features,
+                                 float *buf_a, float *buf_b) {
+    float *in_buf  = buf_a, *out_buf = buf_b;
+
+    memcpy(in_buf, in_features, LAYER_SIZES[0] * sizeof(float));
+
+    for (int L = 0; L < NUM_LAYERS; L++) {
+        int size_in   = LAYER_SIZES[L];
+        int size_out  = LAYER_SIZES[L+1];
+        int is_output = (L == NUM_LAYERS - 1);
+
+        const float *W = WEIGHTS[L];
+        const float *B = BIASES[L];
+
+        for (int j = 0; j < size_out; j++) {
+            float acc = B[j];
+            for (int k = 0; k < size_in; k++)
+                acc += W[k*size_out + j] * in_buf[k];
+            out_buf[j] = is_output
+                       ? fast_sigmoid_scalar(acc)
+                       : (acc > 0.0f ? acc : 0.0f);
+        }
+
+        // swap buffers
+        float *tmp = in_buf; in_buf = out_buf; out_buf = tmp;
+    }
+
+    // argmax
+    int final_size = LAYER_SIZES[NUM_LAYERS], best = 0;
+    float best_v = in_buf[0];
+    for (int i = 1; i < final_size; i++) {
+        if (in_buf[i] > best_v) {
+            best_v = in_buf[i];
+            best   = i;
+        }
+    }
+    float score = in_buf[0];
+    return (score > 0.5f) ? 1 : 0;
+}
+
+
 // Fast piecewise sigmoid approximation
 static inline float fast_sigmoid(float x) {
     if (x <= -4.0f) return 0.0f;
@@ -483,7 +525,8 @@ void handle_packet(struct flow_key *key,
             (float)e->flag_bits_sum
         };
 
-        int prediction = predict_mlp(features, w->buf_a, w->buf_b);
+        //int prediction = predict_mlp(features, w->buf_a, w->buf_b);
+        int prediction = predict_mlp_c_general(features, w->buf_a, w->buf_b);
         //printf("MLP prediction: %d\n", prediction);
 
         /* cleanup flow */
