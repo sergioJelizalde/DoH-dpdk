@@ -52,8 +52,8 @@
  //for bluefield2
  #include <arm_neon.h>
 
-#include "mlp_8.h"
-//#include "mlp_32.h"
+//#include "mlp_8.h"
+#include "mlp_32.h"
 // #include "mlp_64_32.h"
 //#include "mlp_128_64_32.h"
 //#include "mlp_256_128_64_32.h"
@@ -525,7 +525,7 @@ handle_packet(struct flow_key   *key,
         };
 
         // int pred = predict_mlp(features, w->buf_a, w->buf_b);
-        // int pred = predict_mlp_c_general(features, w->buf_a, w->buf_b);
+        int pred = predict_mlp_c_general(features, w->buf_a, w->buf_b);
 
         // cleanup flows
         rte_hash_del_key(w->flow_table, key);
