@@ -61,7 +61,7 @@
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
 
-#define NUM_MBUFS 8191 
+#define NUM_MBUFS 8191*2 
 
  // #define BURST_SIZE (1 << 9)
  
@@ -700,7 +700,7 @@ static struct worker_args worker_args[MAX_CORES];
          rte_panic("Cannot init EAL\n");
 
     unsigned total_lcores = rte_lcore_count();
-    
+
     struct rte_hash_parameters p = {
     .entries           = MAX_FLOWS_PER_CORE,
     .key_len           = sizeof(struct flow_key),
