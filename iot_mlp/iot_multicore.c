@@ -148,9 +148,9 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t number_rings)
         return retval;
     }
 
-    printf("Port %u: max_rx_queues=%u, max_tx_queues=%u, rx_offload_capa=0x%016" PRIx64 ", flow_type=0x%08x\n",
-           port, dev_info.max_rx_queues, dev_info.max_tx_queues,
-           dev_info.rx_offload_capa, dev_info.flow_type_rss_offloads);
+    printf("Port %u: max_rx_queues=%u, max_tx_queues=%u, rx_offload_capa=0x%016" PRIx64 ", flow_type_rss_offloads=0x%016" PRIx64 "\n",
+       port, dev_info.max_rx_queues, dev_info.max_tx_queues,
+       dev_info.rx_offload_capa, dev_info.flow_type_rss_offloads);
 
     /* Cap number_rings to NIC capabilities */
     nb_queue_pairs = number_rings;
