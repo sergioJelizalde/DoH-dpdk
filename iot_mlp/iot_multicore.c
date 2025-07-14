@@ -559,7 +559,7 @@ static struct worker_args worker_args[MAX_CORES];
             
             uint16_t nb_rx = rte_eth_rx_burst(w->port_id, w->queue_id, bufs, BURST_SIZE);
             if (unlikely(nb_rx == 0)) continue;
-            
+
             // break;
             if (nb_rx > 0)
             {
@@ -688,7 +688,7 @@ static struct worker_args worker_args[MAX_CORES];
  {
      struct rte_mempool *mbuf_pool;
      uint16_t nb_ports;
-     uint16_t portid;
+     uint16_t portid = 0;
      unsigned lcore_id;
      int ret;
      // int packet_counters[10] = {0};
