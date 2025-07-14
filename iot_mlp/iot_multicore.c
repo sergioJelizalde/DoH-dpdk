@@ -55,8 +55,8 @@
 //#include "mlp_8.h"
 //#include "mlp_32.h"
 // #include "mlp_64_32.h"
- #include "mlp_128_64_32.h"
-//#include "mlp_256_128_64_32.h"
+//#include "mlp_128_64_32.h"
+#include "mlp_256_128_64_32.h"
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -78,7 +78,14 @@
 
 #define MAX_FLOWS 16384 
 #define N_PACKETS 8
-#define INVALID_INDEX UINT32_MAX
+#define INVALID_INDEX   UINT32_MAX
+
+#define MAX_FLOWS_PER_CORE 4096
+#define MAX_CORES       RTE_MAX_LCORE
+
+/* Statically allocate pools for every possible lcore */
+static struct flow_entry flow_pools[MAX_CORES][MAX_FLOWS_PER_CORE];
+static struct rte_hash *flow_tables[MAX_CORES];
 
 struct flow_key {
     uint32_t src_ip;
