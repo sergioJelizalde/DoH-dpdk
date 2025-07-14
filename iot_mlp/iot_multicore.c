@@ -324,7 +324,7 @@ static void layer_forward_neon(const float *W, const float *B,
 static int predict_mlp(const float *in_features,
                                     float *buf_a, float *buf_b) {
     float *in_buf  = buf_a, *out_buf = buf_b;
-    memcpy(in_buf, in_features, LAYER_SIZES[0] * sizeof(float))
+    memcpy(in_buf, in_features, LAYER_SIZES[0] * sizeof(float));
     printf("entering prediction");
     for (int L = 0; L < NUM_LAYERS; L++) {
         layer_forward_neon(
