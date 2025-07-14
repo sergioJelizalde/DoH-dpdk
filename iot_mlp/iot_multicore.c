@@ -528,8 +528,8 @@ void handle_packet(struct flow_key *key,
             (float)e->flag_bits_sum
         };
 
-        //int prediction = predict_mlp(features, w->buf_a, w->buf_b);
-        int prediction = predict_mlp_c_general(features, w->buf_a, w->buf_b);
+        int prediction = predict_mlp(features, w->buf_a, w->buf_b);
+        //int prediction = predict_mlp_c_general(features, w->buf_a, w->buf_b);
         //printf("MLP prediction: %d\n", prediction);
 
         /* cleanup flow */
