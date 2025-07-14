@@ -83,9 +83,6 @@
 #define MAX_FLOWS_PER_CORE 4096
 #define MAX_CORES       RTE_MAX_LCORE
 
-/* Statically allocate pools for every possible lcore */
-static struct flow_entry flow_pools[MAX_CORES][MAX_FLOWS_PER_CORE];
-static struct rte_hash *flow_tables[MAX_CORES];
 
 struct flow_key {
     uint32_t src_ip;
@@ -118,9 +115,9 @@ struct flow_entry {
     uint32_t flag_bits_sum;
 };
 
-struct rte_hash *flow_table;
-struct rte_hash_parameters hash_params = {0};
-struct flow_entry flow_pool[MAX_FLOWS];
+/* Statically allocate pools for every possible lcore */
+static struct flow_entry flow_pools[MAX_CORES][MAX_FLOWS_PER_CORE];
+static struct rte_hash *flow_tables[MAX_CORES];
 
  /* >8 End of launching function on lcore. */
  static inline int
@@ -348,9 +345,17 @@ allocate_entry_per_core(struct worker_args *w)
 
 
 
-static inline void reset_entry(uint32_t idx) {
-    if (idx < MAX_FLOWS)
-        memset(&flow_pool[idx], 0, sizeof(struct flow_entry));
+static inline void
+reset_entry_per_core(struct worker_args *w, uint32_t idx)
+{
+    struct flow_entry *e = &w->flow_pool[idx];
+
+    // Clear everything
+    memset(e, 0, sizeof(*e));
+
+    // Set initial “min” values so first packet always replaces them
+    e->len_min = UINT32_MAX;
+    e->iat_min = UINT64_MAX;
 }
 
 
@@ -467,8 +472,8 @@ void handle_packet(struct flow_key *key,
         //printf("MLP prediction: %d\n", prediction);
 
         /* cleanup flow */
-        rte_hash_del_key(flow_table, key);
-        reset_entry(index);
+        rte_hash_del_key(w->flow_table, key);
+        reset_entry_per_core(w, index);
     }
 }
 
@@ -586,7 +591,7 @@ static struct worker_args worker_args[MAX_CORES];
                             // int prediction = predict_mlp(features);
                             // uint64_t start_cycles = rte_rdtsc_precise();
 
-                            handle_packet(&key, pkt_len, pkt_time, flags_count, aux_a, aux_b, w);
+                            handle_packet(&key, pkt_len, pkt_time, flags_count, w);
 
                             // uint64_t end_cycles = rte_rdtsc_precise();
                             // uint64_t inference_cycles = end_cycles - start_cycles;
@@ -664,53 +669,27 @@ static struct worker_args worker_args[MAX_CORES];
      unsigned lcore_id;
      int ret;
      // int packet_counters[10] = {0};
- 
+    unsigned total_lcores = rte_lcore_count();
+    
      ret = rte_eal_init(argc, argv);
      if (ret < 0)
          rte_panic("Cannot init EAL\n");
 
-
-    unsigned total_lcores = rte_lcore_count();
-    uint16_t q = 0;
-
-    for (unsigned core_id = 0; core_id < total_lcores; core_id++) {
-        struct worker_args *w = &worker_args[core_id];
-
-        /* bind each core to its own slice of flow_pool & its own hash */
-        w->flow_pool = flow_pools[core_id];
-        w->next_free = 0;
-
-        /* create a per-core hash table */
-        struct rte_hash_parameters p = hash_params;
-        char name[32];
-        snprintf(name, sizeof(name), "flow_tbl_%u", core_id);
-        p.name = name;
-        p.entries  = MAX_FLOWS_PER_CORE;
-        p.socket_id = rte_socket_id();
-        p.extra_flag |= RTE_HASH_EXTRA_FLAGS_MULTI_WRITER;  //maybe not needed
-        flow_tables[core_id] = rte_hash_create(&p);
-        if (!flow_tables[core_id])
-            rte_panic("Cannot create per-core hash[%u]\n", core_id);
-
-        w->flow_table = flow_tables[core_id];
-        w->queue_id   = q++;
+    struct rte_hash_parameters p = {
+    .entries           = MAX_FLOWS_PER_CORE,
+    .key_len           = sizeof(struct flow_key),
+    .hash_func         = rte_jhash,
+    .hash_func_init_val= 0,
+    .socket_id         = rte_socket_id(),
+    };
+    for (unsigned core = 0; core < total_lcores; core++) {
+    char name[32];
+    snprintf(name, sizeof(name), "ftbl_%u", core);
+    p.name = name;
+    flow_tables[core] = rte_hash_create(&p);
+    if (!flow_tables[core])
+        rte_exit(EXIT_FAILURE, "Cannot create hash for core %u\n", core);
     }
-
-
-
-    /*
-     hash_params.name = "flow_table";
-     hash_params.entries = MAX_FLOWS;
-     hash_params.key_len = sizeof(struct flow_key);
-     hash_params.hash_func = rte_jhash;
-     hash_params.hash_func_init_val = 0;
-     hash_params.socket_id = rte_socket_id();
- 
-     flow_table = rte_hash_create(&hash_params);
-     if (!flow_table) {
-         rte_panic("Failed to create hash table\n");
-     }
-     */
 
      argc -= ret;
      argv += ret;
@@ -722,12 +701,6 @@ static struct worker_args worker_args[MAX_CORES];
                                          RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
      if (mbuf_pool == NULL)
          rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
-
-
- 
-    unsigned total_lcores = rte_lcore_count(); 
-    uint16_t q = 0;
-
 
      RTE_ETH_FOREACH_DEV(portid)
      if (port_init(portid, mbuf_pool,total_lcores) != 0)
@@ -745,39 +718,40 @@ static struct worker_args worker_args[MAX_CORES];
             if (LAYER_SIZES[i] > max_neurons)
                 max_neurons = LAYER_SIZES[i];
 
-     RTE_LCORE_FOREACH_WORKER(lcore_id)
-     {
-        struct worker_args *w = &worker_args[lcore_id];
 
-        // share pool and table
+    
+    
+    uint16_t queue_id = 0;
+
+    for (unsigned core_id = 0; core_id < total_lcores; core_id++) {
+        struct worker_args *w = &worker_args[core_id];
+
+        // 1) Shared resources
         w->mbuf_pool  = mbuf_pool;
-        w->flow_table = flow_table;
-        w->queue_id   = q++;
+        w->flow_table = flow_tables[core_id];
+        w->flow_pool  = flow_pools[core_id];
 
-        // mlp initialization
-        
+        // 2) Per-core state
+        w->next_free  = 0;            // start allocating at slot 0
+        w->queue_id   = queue_id++;   // one RX queue per core
 
-        // allocate *this core’s* NEON buffers
+        // 3) Scratch buffers for NEON inference
         if (posix_memalign((void**)&w->buf_a, 16, max_neurons * sizeof(float)) ||
             posix_memalign((void**)&w->buf_b, 16, max_neurons * sizeof(float))) {
-            rte_exit(EXIT_FAILURE, "posix_memalign failed\n");
+            rte_exit(EXIT_FAILURE, "posix_memalign failed for core %u\n", core_id);
         }
 
-         rte_eal_remote_launch(lcore_main, w, lcore_id);
-     }
-
-     {
-        unsigned master_id = rte_lcore_id();
-        struct worker_args *w = &worker_args[master_id];
-        w->mbuf_pool  = mbuf_pool;
-        w->flow_table = flow_table;
-        w->queue_id   = q;
-
-        posix_memalign((void**)&w->buf_a, 16, max_neurons * sizeof(float));
-        posix_memalign((void**)&w->buf_b, 16, max_neurons * sizeof(float));
-
-        lcore_main(w);   // call in the master thread
+        // 4) Launch worker on that core (skip core 0 if you plan to use it as master below)
+        if (core_id != rte_get_master_lcore()) {
+            rte_eal_remote_launch(lcore_main, w, core_id);
+        }
     }
+
+    // Finally, run master on its own core (often core 0)
+    unsigned master = rte_get_master_lcore();
+    struct worker_args *w_master = &worker_args[master];
+    // (mbuf_pool, flow_table, flow_pool, next_free, queue_id already set above)
+    lcore_main(w_master);
 
  
      char command[50];
@@ -821,7 +795,13 @@ static struct worker_args worker_args[MAX_CORES];
  
      rte_eal_mp_wait_lcore();
  
-     rte_hash_free(flow_table);
+     // free each per-core hash table
+    for (unsigned core_id = 0; core_id < total_lcores; core_id++) {
+        if (flow_tables[core_id]) {
+            rte_hash_free(flow_tables[core_id]);
+            flow_tables[core_id] = NULL;
+        }
+    }
  
      close_ports();
  
