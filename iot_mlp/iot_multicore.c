@@ -476,23 +476,17 @@ void handle_packet(struct flow_key *key,
                    uint8_t         flags_count,
                    struct worker_args *w)
 {
-    void    *data_ptr;
-    uint32_t index;
+    uintptr_t index;
     int ret = rte_hash_lookup_data(w->flow_table, key, (void **)&index);
 
     if (ret < 0) {
     // not found: allocate a new index
     index = allocate_entry_per_core(w);
     if (index == INVALID_INDEX) return;
-    ret = rte_hash_add_key_data(w->flow_table, key,
-                                (void*)(uintptr_t)index);
+    ret = rte_hash_add_key_data(w->flow_table, key, (void*)(uintptr_t)index);
     if (ret < 0) {
         w->next_free--;
         return;
-    }
-    } else {
-        // found: convert back to integer index
-        index = (uint32_t)(uintptr_t)data_ptr;
     }
     struct flow_entry *e = &w->flow_pool[index];
 
