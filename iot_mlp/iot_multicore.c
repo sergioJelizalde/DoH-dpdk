@@ -52,8 +52,8 @@
  //for bluefield2
  #include <arm_neon.h>
 
-//#include "mlp_8.h"
-#include "mlp_32.h"
+#include "mlp_8.h"
+//#include "mlp_32.h"
 // #include "mlp_64_32.h"
 //#include "mlp_128_64_32.h"
 //#include "mlp_256_128_64_32.h"
@@ -67,7 +67,7 @@
  
  #define QUEUE_SIZE 256
  
- #define BURST_SIZE 128
+ #define BURST_SIZE 64
  
  // #define QUEUE_SIZE (1 << 6)
  
