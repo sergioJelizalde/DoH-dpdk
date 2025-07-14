@@ -152,8 +152,8 @@ static struct rte_hash *flow_tables[MAX_CORES];
 
      struct rte_eth_conf port_conf = {
          .rxmode = {
-             //.mq_mode = RTE_ETH_MQ_RX_RSS,
-             .offloads = RTE_ETH_RX_OFFLOAD_TIMESTAMP,
+             .mq_mode = RTE_ETH_MQ_RX_RSS,
+             //.offloads = RTE_ETH_RX_OFFLOAD_TIMESTAMP,
          },
          .rx_adv_conf = {
              .rss_conf = {
