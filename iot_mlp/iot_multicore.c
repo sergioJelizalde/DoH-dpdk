@@ -91,7 +91,7 @@ struct worker_args {
     float              *buf_b;
     uint16_t            queue_id;    
     uint32_t            next_free;
-
+    uint16_t port_id;
 };
 
 struct flow_key {
@@ -554,111 +554,110 @@ static struct worker_args worker_args[MAX_CORES];
 
      for (;;)
      {
-         // port=1;
-         RTE_ETH_FOREACH_DEV(port)
-         {
-             struct rte_mbuf *bufs[BURST_SIZE];
-             
-             uint16_t nb_rx = rte_eth_rx_burst(port, queue_id, bufs, BURST_SIZE);
- 
-             // break;
-             if (nb_rx > 0)
-             {
-                //uint64_t start_cycles = rte_rdtsc_precise();
-                 received_packets+=nb_rx;
-                 struct rte_ether_hdr *ethernet_header; 
-                 struct rte_ipv4_hdr *pIP4Hdr;
-                 struct rte_tcp_hdr *pTcpHdr;
-              
-                 u_int16_t ethernet_type;
-                 for (int i = 0; i < nb_rx; i++)
-                 {
-                     // pkt_count +=1;
-                     ethernet_header = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
-                     ethernet_type = ethernet_header->ether_type;
-                     ethernet_type = rte_cpu_to_be_16(ethernet_type);
- 
-                     if (ethernet_type == 2048)
-                     {
-                         uint32_t ipdata_offset = sizeof(struct rte_ether_hdr);
- 
-                         pIP4Hdr = rte_pktmbuf_mtod_offset(bufs[i], struct rte_ipv4_hdr *, ipdata_offset);
-                         uint32_t src_ip = rte_be_to_cpu_32(pIP4Hdr->src_addr);
-                         uint32_t dst_ip = rte_be_to_cpu_32(pIP4Hdr->dst_addr);
-                         uint8_t IPv4NextProtocol = pIP4Hdr->next_proto_id;
-                         ipdata_offset += (pIP4Hdr->version_ihl & RTE_IPV4_HDR_IHL_MASK) * RTE_IPV4_IHL_MULTIPLIER;
- 
-                         if (IPv4NextProtocol == 6)
-                         {
- 
-                             pTcpHdr = rte_pktmbuf_mtod_offset(bufs[i], struct rte_tcp_hdr *, ipdata_offset);
-                             uint16_t dst_port = rte_be_to_cpu_16(pTcpHdr->dst_port);
-                             uint16_t src_port = rte_be_to_cpu_16(pTcpHdr->src_port);
-                             uint8_t tcp_dataoffset = pTcpHdr->data_off >> 4;
-                             uint32_t tcpdata_offset = ipdata_offset + sizeof(struct rte_tcp_hdr) + (tcp_dataoffset - 5) * 4;
-                               /* figure out how many ‘1’ bits are set in TCP flags, or 0 otherwise */
-                               // integrate code below with down code
-                            uint8_t flags_count = __builtin_popcount(pTcpHdr->tcp_flags);
+
+            struct rte_mbuf *bufs[BURST_SIZE];
+            
+            uint16_t nb_rx = rte_eth_rx_burst(w->port_id, w->queue_id, bufs, BURST_SIZE);
+            if (unlikely(nb_rx == 0)) continue;
+            
+            // break;
+            if (nb_rx > 0)
+            {
+            //uint64_t start_cycles = rte_rdtsc_precise();
+                received_packets+=nb_rx;
+                struct rte_ether_hdr *ethernet_header; 
+                struct rte_ipv4_hdr *pIP4Hdr;
+                struct rte_tcp_hdr *pTcpHdr;
+            
+                u_int16_t ethernet_type;
+                for (int i = 0; i < nb_rx; i++)
+                {
+                    // pkt_count +=1;
+                    ethernet_header = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
+                    ethernet_type = ethernet_header->ether_type;
+                    ethernet_type = rte_cpu_to_be_16(ethernet_type);
+
+                    if (ethernet_type == 2048)
+                    {
+                        uint32_t ipdata_offset = sizeof(struct rte_ether_hdr);
+
+                        pIP4Hdr = rte_pktmbuf_mtod_offset(bufs[i], struct rte_ipv4_hdr *, ipdata_offset);
+                        uint32_t src_ip = rte_be_to_cpu_32(pIP4Hdr->src_addr);
+                        uint32_t dst_ip = rte_be_to_cpu_32(pIP4Hdr->dst_addr);
+                        uint8_t IPv4NextProtocol = pIP4Hdr->next_proto_id;
+                        ipdata_offset += (pIP4Hdr->version_ihl & RTE_IPV4_HDR_IHL_MASK) * RTE_IPV4_IHL_MULTIPLIER;
+
+                        if (IPv4NextProtocol == 6)
+                        {
+
+                            pTcpHdr = rte_pktmbuf_mtod_offset(bufs[i], struct rte_tcp_hdr *, ipdata_offset);
+                            uint16_t dst_port = rte_be_to_cpu_16(pTcpHdr->dst_port);
+                            uint16_t src_port = rte_be_to_cpu_16(pTcpHdr->src_port);
+                            uint8_t tcp_dataoffset = pTcpHdr->data_off >> 4;
+                            uint32_t tcpdata_offset = ipdata_offset + sizeof(struct rte_tcp_hdr) + (tcp_dataoffset - 5) * 4;
+                            /* figure out how many ‘1’ bits are set in TCP flags, or 0 otherwise */
+                            // integrate code below with down code
+                        uint8_t flags_count = __builtin_popcount(pTcpHdr->tcp_flags);
 
 
-                            //printf("This is a application data packet");
-                            key.src_ip = dst_ip;  
-                            key.dst_ip = src_ip; 
-                            key.src_port = dst_port;
-                            key.dst_port = src_port;
-                            key.protocol = IPv4NextProtocol;
+                        //printf("This is a application data packet");
+                        key.src_ip = dst_ip;  
+                        key.dst_ip = src_ip; 
+                        key.src_port = dst_port;
+                        key.dst_port = src_port;
+                        key.protocol = IPv4NextProtocol;
 
-                            uint16_t pkt_len = pIP4Hdr->total_length;
-                            uint64_t pkt_time = is_timestamp_enabled(bufs[i]) ? get_hw_timestamp(bufs[i]) : 0;    
-                            // printf("TSC frequency: %lu Hz\n", hz);
-                            
-                            // int prediction = predict_mlp(features);
-                            // uint64_t start_cycles = rte_rdtsc_precise();
+                        uint16_t pkt_len = pIP4Hdr->total_length;
+                        uint64_t pkt_time = is_timestamp_enabled(bufs[i]) ? get_hw_timestamp(bufs[i]) : 0;    
+                        // printf("TSC frequency: %lu Hz\n", hz);
+                        
+                        // int prediction = predict_mlp(features);
+                        // uint64_t start_cycles = rte_rdtsc_precise();
 
-                            handle_packet(&key, pkt_len, pkt_time, flags_count, w);
+                        handle_packet(&key, pkt_len, pkt_time, flags_count, w);
 
-                            // uint64_t end_cycles = rte_rdtsc_precise();
-                            // uint64_t inference_cycles = end_cycles - start_cycles;
+                        // uint64_t end_cycles = rte_rdtsc_precise();
+                        // uint64_t inference_cycles = end_cycles - start_cycles;
 
-                            // // Convert to nanoseconds
-                            // double latency_ns = ((double)inference_cycles / hz) * 1e9;
+                        // // Convert to nanoseconds
+                        // double latency_ns = ((double)inference_cycles / hz) * 1e9;
 
-                            // printf("Latency: %.2f ns (%lu cycles)\n", latency_ns, inference_cycles);                                       
-                          
-                        }
+                        // printf("Latency: %.2f ns (%lu cycles)\n", latency_ns, inference_cycles);                                       
+                        
                     }
                 }
+            }
 
-                //uint64_t end_cycles = rte_rdtsc_precise();
-                //uint64_t latency_cycles = end_cycles - start_cycles;
+            //uint64_t end_cycles = rte_rdtsc_precise();
+            //uint64_t latency_cycles = end_cycles - start_cycles;
 
-                // Convert to nanoseconds
-                //uint64_t hz = rte_get_tsc_hz();
-                //double latency_ns = ((double)latency_cycles / hz) * 1e9;
+            // Convert to nanoseconds
+            //uint64_t hz = rte_get_tsc_hz();
+            //double latency_ns = ((double)latency_cycles / hz) * 1e9;
 
-                //printf("Latency: %.2f. %d number of packets\n", latency_ns,nb_rx);
+            //printf("Latency: %.2f. %d number of packets\n", latency_ns,nb_rx);
 
-                if (unlikely(nb_rx == 0))
-                    continue;
+            if (unlikely(nb_rx == 0))
+                continue;
 
-                const uint16_t nb_tx = rte_eth_tx_burst(port, queue_id, bufs, nb_rx);
+            const uint16_t nb_tx = rte_eth_tx_burst(port, queue_id, bufs, nb_rx);
 
-                processed_packets += nb_tx;
+            processed_packets += nb_tx;
 
-                if (unlikely(nb_tx < nb_rx))
-                {
-                    uint16_t buf;
+            if (unlikely(nb_tx < nb_rx))
+            {
+                uint16_t buf;
 
-                    // printf("SOme packets are not processed\n");
+                // printf("SOme packets are not processed\n");
 
-                    for (buf = nb_tx; buf < nb_rx; buf++)
-                        rte_pktmbuf_free(bufs[buf]); 
-                }
+                for (buf = nb_tx; buf < nb_rx; buf++)
+                    rte_pktmbuf_free(bufs[buf]); 
+            }
 
-                // printf("Core %u proceesed %u packets\n",core_id,*packet_counter);
- 
-             }
-         }
+            // printf("Core %u proceesed %u packets\n",core_id,*packet_counter);
+
+            }
+         
      }
  
      return 0;
@@ -756,6 +755,8 @@ static struct worker_args worker_args[MAX_CORES];
         w->mbuf_pool  = mbuf_pool;
         w->flow_table = flow_tables[core_id];
         w->flow_pool  = flow_pools[core_id];
+        w->port_id  = portid;
+
 
         // 2) Per-core state
         w->next_free  = 0;            // start allocating at slot 0
