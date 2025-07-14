@@ -67,7 +67,7 @@
  
  #define QUEUE_SIZE 256
  
- #define BURST_SIZE 128
+ #define BURST_SIZE 64
  
  // #define QUEUE_SIZE (1 << 6)
  
@@ -516,7 +516,7 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
              // break;
              if (nb_rx > 0)
              {
-                uint64_t start_cycles = rte_rdtsc_precise();
+                //uint64_t start_cycles = rte_rdtsc_precise();
                  received_packets+=nb_rx;
                  struct rte_ether_hdr *ethernet_header; 
                  struct rte_ipv4_hdr *pIP4Hdr;
@@ -581,14 +581,15 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
                     }
                 }
 
-                uint64_t end_cycles = rte_rdtsc_precise();
-                uint64_t latency_cycles = end_cycles - start_cycles;
+                //uint64_t end_cycles = rte_rdtsc_precise();
+                //uint64_t latency_cycles = end_cycles - start_cycles;
 
                 // Convert to nanoseconds
-                uint64_t hz = rte_get_tsc_hz();
-                double latency_ns = ((double)latency_cycles / hz) * 1e9;
+                //uint64_t hz = rte_get_tsc_hz();
+                //double latency_ns = ((double)latency_cycles / hz) * 1e9;
 
-                printf("Latency: %.2f. %d number of packets\n", latency_ns,nb_rx);
+                //printf("Latency: %.2f. %d number of packets\n", latency_ns,nb_rx);
+
                 if (unlikely(nb_rx == 0))
                     continue;
 
