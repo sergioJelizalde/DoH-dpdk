@@ -640,7 +640,7 @@ static struct worker_args worker_args[MAX_CORES];
             if (unlikely(nb_rx == 0))
                 continue;
 
-            const uint16_t nb_tx = rte_eth_tx_burst(port, queue_id, bufs, nb_rx);
+            const uint16_t nb_tx = rte_eth_tx_burst(w->port_id, w->queue_id, bufs, nb_rx);
 
             processed_packets += nb_tx;
 
