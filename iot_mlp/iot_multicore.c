@@ -589,7 +589,7 @@ static struct worker_args worker_args[MAX_CORES];
             // break;
             if (nb_rx > 0)
             {
-                //uint64_t start_cycles = rte_rdtsc_precise();
+                uint64_t start_cycles = rte_rdtsc_precise();
 
             
                 received_packets+=nb_rx;
@@ -656,7 +656,7 @@ static struct worker_args worker_args[MAX_CORES];
                 }
             }
 
-            /*
+            
             uint64_t end_cycles = rte_rdtsc_precise();
             uint64_t latency_cycles = end_cycles - start_cycles;
             // Convert to nanoseconds
@@ -667,7 +667,7 @@ static struct worker_args worker_args[MAX_CORES];
                 printf("Latency: %.2f. %d number of packets\n", latency_ns, nb_rx);
                 latency_print_count++;
             }
-            */
+            
 
 
             if (unlikely(nb_rx == 0))
