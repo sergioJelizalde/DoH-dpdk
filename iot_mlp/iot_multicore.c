@@ -131,92 +131,116 @@ static struct rte_hash *flow_tables[MAX_CORES];
 
  /* >8 End of launching function on lcore. */
  static inline int
- port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t number_rings)
- {
+port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t number_rings)
+{
+    struct rte_eth_dev_info dev_info;
+    struct rte_eth_rxconf rxconf;
+    struct rte_eth_txconf txconf;
+    uint16_t nb_queue_pairs, rx_rings, tx_rings;
+    int retval;
+    uint16_t q;
 
-     uint16_t nb_queue_pairs = number_rings;
-     uint16_t rx_rings = nb_queue_pairs, tx_rings = nb_queue_pairs;
+    /* Fetch device info */
+    retval = rte_eth_dev_info_get(port, &dev_info);
+    if (retval != 0) {
+        printf("Error getting device info for port %u: %s\n",
+               port, strerror(-retval));
+        return retval;
+    }
 
-     uint16_t nb_rxd = RX_RING_SIZE;
-     uint16_t nb_txd = TX_RING_SIZE;
+    printf("Port %u: max_rx_queues=%u, max_tx_queues=%u, rx_offload_capa=0x%016" PRIx64 ", flow_type=0x%08x\n",
+           port, dev_info.max_rx_queues, dev_info.max_tx_queues,
+           dev_info.rx_offload_capa, dev_info.flow_type);
 
-     uint16_t rx_queue_size = QUEUE_SIZE;
-     uint16_t tx_queue_size = QUEUE_SIZE;
+    /* Cap number_rings to NIC capabilities */
+    nb_queue_pairs = number_rings;
+    if (nb_queue_pairs > dev_info.max_rx_queues) {
+        printf("  -> Capping RX queues from %u to %u\n", nb_queue_pairs, dev_info.max_rx_queues);
+        nb_queue_pairs = dev_info.max_rx_queues;
+    }
+    if (nb_queue_pairs > dev_info.max_tx_queues) {
+        printf("  -> Capping TX queues from %u to %u\n", nb_queue_pairs, dev_info.max_tx_queues);
+        nb_queue_pairs = dev_info.max_tx_queues;
+    }
+    rx_rings = nb_queue_pairs;
+    tx_rings = nb_queue_pairs;
 
-     int retval;
-     uint16_t q;
+    /* Build port_conf with safe defaults */
+    struct rte_eth_conf port_conf = {
+        .rxmode = {
+            .mq_mode  = RTE_ETH_MQ_RX_RSS,
+            .offloads = RTE_ETH_RX_OFFLOAD_TIMESTAMP, /* we'll clear below if unsupported */
+        },
+        .rx_adv_conf = {
+            .rss_conf = {
+                .rss_key = NULL,
+                .rss_hf  = RTE_ETH_RSS_IPV4 | RTE_ETH_RSS_TCP,
+            },
+        },
+        .txmode = {
+            .mq_mode = RTE_ETH_MQ_TX_NONE,
+        },
+    };
 
-     struct rte_eth_dev_info dev_info;
-     struct rte_eth_rxconf rxconf;
-     struct rte_eth_txconf txconf;
+    /* Remove unsupported offloads */
+    if (!(dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TIMESTAMP)) {
+        printf("  -> NIC does not support RX_TIMESTAMP. Disabling offload.\n");
+        port_conf.rxmode.offloads &= ~RTE_ETH_RX_OFFLOAD_TIMESTAMP;
+    }
 
-     struct rte_eth_conf port_conf = {
-         .rxmode = {
-             .mq_mode = RTE_ETH_MQ_RX_RSS,
-             //.offloads = RTE_ETH_RX_OFFLOAD_TIMESTAMP,
-         },
-         .rx_adv_conf = {
-             .rss_conf = {
-                 .rss_key = NULL,
-                 .rss_hf = RTE_ETH_RSS_IPV4 | RTE_ETH_RSS_TCP,
-             },
-         },
-         .txmode = {
-             .mq_mode = RTE_ETH_MQ_TX_NONE,
-         },
-     };
- 
-     if (!rte_eth_dev_is_valid_port(port))
-         return -1;
- 
-     rte_eth_promiscuous_enable(port);
- 
-     retval = rte_eth_dev_info_get(port, &dev_info);
-     if (retval != 0)
-     {
-         printf("Error during getting device (port %u) info: %s\n",
-                port, strerror(-retval));
- 
-         return retval;
-     }
- 
-     retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
-     if (retval != 0)
-         return retval;
- 
-     retval = rte_eth_dev_adjust_nb_rx_tx_desc(port, &nb_rxd, &nb_txd);
-     if (retval != 0)
-         return retval;
-     rxconf = dev_info.default_rxconf;
- 
-     for (q = 0; q < rx_rings; q++)
-     {
-         retval = rte_eth_rx_queue_setup(port, q, rx_queue_size,
-                                         rte_eth_dev_socket_id(port), &rxconf, mbuf_pool);
-         if (retval < 0)
-             return retval;
-     }
- 
+    /* Mask RSS hash types */
+    port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type;
+    if (port_conf.rx_adv_conf.rss_conf.rss_hf == 0) {
+        printf("  -> WARNING: NIC does not support requested RSS hash types. Disabling RSS.\n");
+        port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_NONE;
+    }
 
-     txconf = dev_info.default_txconf;
-     txconf.offloads = port_conf.txmode.offloads;
+    /* Configure the device */
+    retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
+    if (retval < 0)
+        return retval;
 
-     for (q = 0; q < tx_rings; q++)
-     {
-         retval = rte_eth_tx_queue_setup(port, q, tx_queue_size,
-                                         rte_eth_dev_socket_id(port), &txconf);
-         if (retval < 0)
-             return retval;
-     }
+    /* Adjust descriptors */
+    uint16_t nb_rxd = RX_RING_SIZE;
+    uint16_t nb_txd = TX_RING_SIZE;
+    retval = rte_eth_dev_adjust_nb_rx_tx_desc(port, &nb_rxd, &nb_txd);
+    if (retval < 0)
+        return retval;
 
-     retval = rte_eth_dev_start(port);
-     if (retval < 0)
-     {
-         return retval;
-     }
+    /* Setup RX queues */
+    rxconf = dev_info.default_rxconf;
+    for (q = 0; q < rx_rings; q++) {
+        retval = rte_eth_rx_queue_setup(port, q, nb_rxd,
+                                        rte_eth_dev_socket_id(port),
+                                        &rxconf, mbuf_pool);
+        if (retval < 0)
+            return retval;
+    }
 
-     return 0;
- }
+    /* Setup TX queues */
+    txconf = dev_info.default_txconf;
+    txconf.offloads = port_conf.txmode.offloads;
+    for (q = 0; q < tx_rings; q++) {
+        retval = rte_eth_tx_queue_setup(port, q, nb_txd,
+                                        rte_eth_dev_socket_id(port),
+                                        &txconf);
+        if (retval < 0)
+            return retval;
+    }
+
+    /* Start the device */
+    retval = rte_eth_dev_start(port);
+    if (retval < 0)
+        return retval;
+
+    /* Enable promiscuous mode */
+    rte_eth_promiscuous_enable(port);
+
+    printf("Port %u successfully initialized with %u RX/TX queues.\n",
+           port, nb_queue_pairs);
+    return 0;
+}
+
  
  
  
