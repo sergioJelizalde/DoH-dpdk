@@ -1,4 +1,4 @@
-## rand ip 
+## 1000
 page range
 range 0 src mac start 10:70:fd:b3:48:56
 range 0 src mac min 10:70:fd:b3:48:56
@@ -10,7 +10,81 @@ range 0 dst mac max 10:70:fd:b3:48:56
 
 range 0 src ip start 172.16.0.0
 range 0 src ip min 172.16.0.0
-range 0 src ip max 172.16.0.4
+range 0 src ip max 172.16.3.231
+range 0 src ip inc 0.0.0.1
+
+range 0 dst ip start 172.16.10.3
+range 0 dst ip min 172.16.10.3
+range 0 dst ip max 172.16.10.3
+
+range 0 size start 1500
+range 0 size min 1500
+range 0 size max 1500
+
+range 0 dst port start 1234
+range 0 dst port min 1234
+range 0 dst port max 1234
+
+range 0 src port start 80
+range 0 src port min 80
+range 0 src port max 80
+
+enable 0 range
+range 0 proto tcp
+page main
+
+
+
+## 5000
+page range
+range 0 src mac start 10:70:fd:b3:48:56
+range 0 src mac min 10:70:fd:b3:48:56
+range 0 src mac max 10:70:fd:b3:48:56
+
+range 0 dst mac start 10:70:fd:b3:48:56
+range 0 dst mac min 10:70:fd:b3:48:56
+range 0 dst mac max 10:70:fd:b3:48:56
+
+range 0 src ip start 172.16.0.0
+range 0 src ip min 172.16.0.0
+range 0 src ip max 172.16.19.135
+range 0 src ip inc 0.0.0.1
+
+range 0 dst ip start 172.16.10.3
+range 0 dst ip min 172.16.10.3
+range 0 dst ip max 172.16.10.3
+
+range 0 size start 1500
+range 0 size min 1500
+range 0 size max 1500
+
+range 0 dst port start 1234
+range 0 dst port min 1234
+range 0 dst port max 1234
+
+range 0 src port start 80
+range 0 src port min 80
+range 0 src port max 80
+
+enable 0 range
+range 0 proto tcp
+page main
+
+
+
+## 10000
+page range
+range 0 src mac start 10:70:fd:b3:48:56
+range 0 src mac min 10:70:fd:b3:48:56
+range 0 src mac max 10:70:fd:b3:48:56
+
+range 0 dst mac start 10:70:fd:b3:48:56
+range 0 dst mac min 10:70:fd:b3:48:56
+range 0 dst mac max 10:70:fd:b3:48:56
+
+range 0 src ip start 172.16.0.0
+range 0 src ip min 172.16.0.0
+range 0 src ip max 172.16.39.15
 range 0 src ip inc 0.0.0.1
 
 range 0 dst ip start 172.16.10.3
