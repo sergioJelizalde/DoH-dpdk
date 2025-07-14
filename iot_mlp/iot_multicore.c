@@ -83,6 +83,16 @@
 #define MAX_FLOWS_PER_CORE 4096
 #define MAX_CORES       RTE_MAX_LCORE
 
+struct worker_args {
+    struct rte_mempool *mbuf_pool;
+    struct rte_hash    *flow_table;
+    struct flow_entry  *flow_pool; 
+    float              *buf_a;
+    float              *buf_b;
+    uint16_t            queue_id;    
+    uint32_t            next_free;
+
+};
 
 struct flow_key {
     uint32_t src_ip;
@@ -477,16 +487,6 @@ void handle_packet(struct flow_key *key,
     }
 }
 
-struct worker_args {
-    struct rte_mempool *mbuf_pool;
-    struct rte_hash    *flow_table;
-    struct flow_entry  *flow_pool; 
-    float              *buf_a;
-    float              *buf_b;
-    uint16_t            queue_id;    
-    uint32_t            next_free;
-
-};
 static struct worker_args worker_args[MAX_CORES];
 
 
@@ -670,7 +670,7 @@ static struct worker_args worker_args[MAX_CORES];
      int ret;
      // int packet_counters[10] = {0};
     unsigned total_lcores = rte_lcore_count();
-    
+
      ret = rte_eal_init(argc, argv);
      if (ret < 0)
          rte_panic("Cannot init EAL\n");
@@ -742,13 +742,13 @@ static struct worker_args worker_args[MAX_CORES];
         }
 
         // 4) Launch worker on that core (skip core 0 if you plan to use it as master below)
-        if (core_id != rte_get_master_lcore()) {
+        if (core_id != rte_get_main_lcore()) {
             rte_eal_remote_launch(lcore_main, w, core_id);
         }
     }
 
     // Finally, run master on its own core (often core 0)
-    unsigned master = rte_get_master_lcore();
+    unsigned master = rte_get_main_lcore();
     struct worker_args *w_master = &worker_args[master];
     // (mbuf_pool, flow_table, flow_pool, next_free, queue_id already set above)
     lcore_main(w_master);
@@ -788,7 +788,7 @@ static struct worker_args worker_args[MAX_CORES];
                  fclose(file);
                  // packet_counters[lcore_id] = 0;
              }
-             // break;
+              //break;
          }
      }
  
