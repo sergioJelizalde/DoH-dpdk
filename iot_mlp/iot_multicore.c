@@ -67,7 +67,7 @@
  
  #define QUEUE_SIZE 256
  
- #define BURST_SIZE 128
+ #define BURST_SIZE 32
  
  // #define QUEUE_SIZE (1 << 6)
  
