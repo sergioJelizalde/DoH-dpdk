@@ -84,8 +84,8 @@
 #define MAX_CORES       RTE_MAX_LCORE
 
 /* Statically allocate pools for every possible lcore */
-static struct flow_entry flow_pools[MAX_CORES][MAX_FLOWS_PER_CORE];
-static struct rte_hash *flow_tables[MAX_CORES];
+//static struct flow_entry flow_pools[MAX_CORES][MAX_FLOWS_PER_CORE];
+//static struct rte_hash *flow_tables[MAX_CORES];
 
 struct flow_key {
     uint32_t src_ip;
