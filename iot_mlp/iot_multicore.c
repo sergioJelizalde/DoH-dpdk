@@ -80,8 +80,6 @@
 #define N_PACKETS 8
 #define INVALID_INDEX UINT32_MAX
 
-static FILE *csv_fp = NULL;
-
 struct flow_key {
     uint32_t src_ip;
     uint32_t dst_ip;
