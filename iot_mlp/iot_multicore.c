@@ -544,7 +544,9 @@ static struct worker_args worker_args[MAX_CORES];
             // break;
             if (nb_rx > 0)
             {
-            uint64_t start_cycles = rte_rdtsc_precise();
+                //uint64_t start_cycles = rte_rdtsc_precise();
+
+            
                 received_packets+=nb_rx;
                 struct rte_ether_hdr *ethernet_header; 
                 struct rte_ipv4_hdr *pIP4Hdr;
@@ -609,18 +611,19 @@ static struct worker_args worker_args[MAX_CORES];
                 }
             }
 
+            /*
             uint64_t end_cycles = rte_rdtsc_precise();
             uint64_t latency_cycles = end_cycles - start_cycles;
-
             // Convert to nanoseconds
             uint64_t hz = rte_get_tsc_hz();
             double latency_ns = ((double)latency_cycles / hz) * 1e9;
-
             static uint32_t latency_print_count = 0;
             if (latency_print_count < 1000) {
                 printf("Latency: %.2f. %d number of packets\n", latency_ns, nb_rx);
                 latency_print_count++;
             }
+            */
+
 
             if (unlikely(nb_rx == 0))
                 continue;
