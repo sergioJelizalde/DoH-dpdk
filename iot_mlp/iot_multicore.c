@@ -359,24 +359,6 @@ allocate_entry_per_core(struct worker_args *w)
     return w->next_free++;
 }
 
-/*
- static inline uint32_t allocate_entry() {
-    for (uint32_t i = 0; i < MAX_FLOWS; i++) {
-        if (flow_pool[i].pkt_count == 0) {
-            flow_pool[i].len_min = UINT16_MAX;
-            flow_pool[i].iat_min = UINT64_MAX;
-            return i;
-        }
-    }
-    return INVALID_INDEX;
-}
-*/
-
-
-
-
-
-
 
 static inline void
 reset_entry_per_core(struct worker_args *w, uint32_t idx)
