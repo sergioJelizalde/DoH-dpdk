@@ -470,69 +470,69 @@ void update_flow_entry(struct flow_entry *e,
 }
 
 
-void handle_packet(struct flow_key *key,
-                   uint16_t        pkt_len,
-                   uint64_t        now,
-                   uint8_t         flags_count,
-                   struct worker_args *w)
+static inline void
+handle_packet(struct flow_key   *key,
+              uint16_t           pkt_len,
+              uint64_t           now,
+              uint8_t            flags_count,
+              struct worker_args *w)
 {
-    uintptr_t index;
-    int ret = rte_hash_lookup_data(w->flow_table, key, (void **)&index);
+    void    *data_ptr = NULL;
+    int      ret      = rte_hash_lookup_data(w->flow_table, key, &data_ptr);
+    uint32_t index;
 
     if (ret < 0) {
-    // not found: allocate a new index
-    index = allocate_entry_per_core(w);
-    if (index == INVALID_INDEX) return;
-    ret = rte_hash_add_key_data(w->flow_table, key, (void*)(uintptr_t)index);
-    if (ret < 0) {
-        w->next_free--;
-        return;
+        // not found: grab a new slot
+        index = allocate_entry_per_core(w);
+        if (index == INVALID_INDEX)
+            return;  // table full
+
+        ret = rte_hash_add_key_data(w->flow_table,
+                                    key,
+                                    (void*)(uintptr_t)index);
+        if (ret < 0) {
+            // failed to insert: rewind allocator
+            w->next_free--;
+            return;
+        }
+    } else {
+        // found: unwrap the stored index
+        index = (uint32_t)(uintptr_t)data_ptr;
     }
+
     struct flow_entry *e = &w->flow_pool[index];
 
-    /* update all stats*/
+    // update per‐flow stats
     update_flow_entry(e, pkt_len, now, flags_count);
 
-    /* once we have N_PACKETS, compute features and predict */
+    // once N_PACKETS seen, build features & (optionally) predict
     if (e->pkt_count >= N_PACKETS) {
         double hz = (double)rte_get_tsc_hz();
 
-        /* compute means */
         float mean_len = (float)(e->len_sum   / (double)e->pkt_count);
-        float mean_iat = (float)(e->iat_sum   / (double)(e->pkt_count - 1)) * 1e6 / hz;  // in µs
+        float mean_iat = (float)(e->iat_sum   / (double)(e->pkt_count - 1))
+                         * 1e6f / hz;
 
-        /* range in µs */
-        float duration_us =
-          (float)((e->last_timestamp - e->first_timestamp) / hz * 1e6);
-
-        /* build your feature vector: */
-        ALIGN16 float features[] = {
-            /* packet‐length features (bytes) */
+        ALIGN16 float features[8] = {
             (float)e->len_min,
             (float)e->len_max,
             mean_len,
-
-            /* IAT features (µs) */
             (float)(e->iat_min / hz * 1e6),
             (float)(e->iat_max / hz * 1e6),
             mean_iat,
-
-            /* total bytes*/
             (float)e->total_len,
-
-            /* TCP flag‐bit sum */
             (float)e->flag_bits_sum
         };
 
-        //int prediction = predict_mlp(features, w->buf_a, w->buf_b);
-        //int prediction = predict_mlp_c_general(features, w->buf_a, w->buf_b);
-        //printf("MLP prediction: %d\n", prediction);
+        // int pred = predict_mlp(features, w->buf_a, w->buf_b);
+        // int pred = predict_mlp_c_general(features, w->buf_a, w->buf_b);
 
-        /* cleanup flow */
+        // cleanup flows
         rte_hash_del_key(w->flow_table, key);
         reset_entry_per_core(w, index);
     }
 }
+
 
 static struct worker_args worker_args[MAX_CORES];
 
