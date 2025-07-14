@@ -688,7 +688,7 @@ static struct worker_args worker_args[MAX_CORES];
  {
      struct rte_mempool *mbuf_pool;
      uint16_t nb_ports;
-     uint16_t portid = 1;
+     uint16_t portid;
      unsigned lcore_id;
      int ret;
      // int packet_counters[10] = {0};
@@ -747,6 +747,7 @@ static struct worker_args worker_args[MAX_CORES];
     
     
     uint16_t queue_id = 0;
+    uint16_t base_port = 0;  // your only port
 
     for (unsigned core_id = 0; core_id < total_lcores; core_id++) {
         struct worker_args *w = &worker_args[core_id];
@@ -755,7 +756,7 @@ static struct worker_args worker_args[MAX_CORES];
         w->mbuf_pool  = mbuf_pool;
         w->flow_table = flow_tables[core_id];
         w->flow_pool  = flow_pools[core_id];
-        w->port_id  = portid;
+        w->port_id  = base_port;
 
 
         // 2) Per-core state
