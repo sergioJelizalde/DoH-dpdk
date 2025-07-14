@@ -643,7 +643,7 @@ static struct worker_args worker_args[MAX_CORES];
                         // int prediction = predict_mlp(features);
                         // uint64_t start_cycles = rte_rdtsc_precise();
 
-                        handle_packet(&key, pkt_len, pkt_time, flags_count, w);
+                        //handle_packet(&key, pkt_len, pkt_time, flags_count, w);
 
                         // uint64_t end_cycles = rte_rdtsc_precise();
                         // uint64_t inference_cycles = end_cycles - start_cycles;
