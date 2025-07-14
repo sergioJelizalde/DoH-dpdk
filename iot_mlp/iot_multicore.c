@@ -169,7 +169,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t number_rings)
     struct rte_eth_conf port_conf = {
         .rxmode = {
             .mq_mode  = RTE_ETH_MQ_RX_RSS,
-            .offloads = RTE_ETH_RX_OFFLOAD_TIMESTAMP, /* we'll clear below if unsupported */
+            .offloads = 0,
         },
         .rx_adv_conf = {
             .rss_conf = {
@@ -240,46 +240,6 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t number_rings)
            port, nb_queue_pairs);
     return 0;
 }
-
- 
- 
- 
- // Start of HW timestamps
- static inline bool
-is_timestamp_enabled(const struct rte_mbuf *mbuf)
-{
-    static uint64_t timestamp_rx_dynflag;
-    int timestamp_rx_dynflag_offset;
-
-    if (timestamp_rx_dynflag == 0) {
-        timestamp_rx_dynflag_offset = rte_mbuf_dynflag_lookup(
-                RTE_MBUF_DYNFLAG_RX_TIMESTAMP_NAME, NULL);
-        if (timestamp_rx_dynflag_offset < 0)
-            return false;
-        timestamp_rx_dynflag = RTE_BIT64(timestamp_rx_dynflag_offset);
-    }
-
-    return (mbuf->ol_flags & timestamp_rx_dynflag) != 0;
-}
-
-static inline rte_mbuf_timestamp_t
-get_hw_timestamp(const struct rte_mbuf *mbuf)
-{
-    static int timestamp_dynfield_offset = -1;
-
-    if (timestamp_dynfield_offset < 0) {
-        timestamp_dynfield_offset = rte_mbuf_dynfield_lookup(
-                RTE_MBUF_DYNFIELD_TIMESTAMP_NAME, NULL);
-        if (timestamp_dynfield_offset < 0)
-            return 0;
-    }
-
-    return *RTE_MBUF_DYNFIELD(mbuf,
-            timestamp_dynfield_offset, rte_mbuf_timestamp_t *);
-}
-
-// End of HW timetamps
-
 
 // Fast piecewise sigmoid approximation
 static inline float fast_sigmoid(float x) {
@@ -609,7 +569,7 @@ static struct worker_args worker_args[MAX_CORES];
                             key.protocol = IPv4NextProtocol;
 
                             uint16_t pkt_len = pIP4Hdr->total_length;
-                            uint64_t pkt_time = is_timestamp_enabled(bufs[i]) ? get_hw_timestamp(bufs[i]) : 0;    
+                            uint64_t pkt_time =  rte_rdtsc();    
                             // printf("TSC frequency: %lu Hz\n", hz);
                             
                             // int prediction = predict_mlp(features);
