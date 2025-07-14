@@ -84,8 +84,8 @@
 #define MAX_CORES       RTE_MAX_LCORE
 
 /* Statically allocate pools for every possible lcore */
-//static struct flow_entry flow_pools[MAX_CORES][MAX_FLOWS_PER_CORE];
-//static struct rte_hash *flow_tables[MAX_CORES];
+static struct flow_entry flow_pools[MAX_CORES][MAX_FLOWS_PER_CORE];
+static struct rte_hash *flow_tables[MAX_CORES];
 
 struct flow_key {
     uint32_t src_ip;
@@ -320,7 +320,16 @@ static int predict_mlp(const float *in_features,
 }
 //--------------------------------------------------------------------------
 
+static inline uint32_t
+allocate_entry_per_core(struct worker_args *w)
+{
+    if (w->next_free >= MAX_FLOWS_PER_CORE)
+        return INVALID_INDEX;
+    /* grab the next slot; it’s already zeroed at startup */
+    return w->next_free++;
+}
 
+/*
  static inline uint32_t allocate_entry() {
     for (uint32_t i = 0; i < MAX_FLOWS; i++) {
         if (flow_pool[i].pkt_count == 0) {
@@ -331,6 +340,13 @@ static int predict_mlp(const float *in_features,
     }
     return INVALID_INDEX;
 }
+*/
+
+
+
+
+
+
 
 static inline void reset_entry(uint32_t idx) {
     if (idx < MAX_FLOWS)
@@ -393,25 +409,25 @@ void handle_packet(struct flow_key *key,
                    uint16_t        pkt_len,
                    uint64_t        now,
                    uint8_t         flags_count,
-                   float          *aux_a,
-                   float           *aux_b)
+                   struct worker_args *w)
 {
     uint32_t index;
-    int ret = rte_hash_lookup_data(flow_table, key, (void **)&index);
+    int ret = rte_hash_lookup_data(w->flow_table, key, (void **)&index);
 
     if (ret < 0) {
-        index = allocate_entry();
+        index = allocate_entry_per_core(w);
         if (index == INVALID_INDEX)
-            return;
+            return; /* table full */
 
-        ret = rte_hash_add_key_data(flow_table, key, (void *)(uintptr_t)index);
+        ret = rte_hash_add_key_data(w->flow_table, key,
+                    (void *)(uintptr_t)index);
         if (ret < 0) {
-            reset_entry(index);
+            /* slot is “allocated” but key failed: rewind */
+            w->next_free--;
             return;
         }
     }
-
-    struct flow_entry *e = &flow_pool[index];
+    struct flow_entry *e = &w->flow_pool[index];
 
     /* update all stats*/
     update_flow_entry(e, pkt_len, now, flags_count);
@@ -447,7 +463,7 @@ void handle_packet(struct flow_key *key,
             (float)e->flag_bits_sum
         };
 
-        int prediction = predict_mlp(features, aux_a, aux_b);
+        int prediction = predict_mlp(features, w->buf_a, w->buf_b);
         //printf("MLP prediction: %d\n", prediction);
 
         /* cleanup flow */
@@ -459,14 +475,14 @@ void handle_packet(struct flow_key *key,
 struct worker_args {
     struct rte_mempool *mbuf_pool;
     struct rte_hash    *flow_table;
+    struct flow_entry  *flow_pool; 
     float              *buf_a;
     float              *buf_b;
-    uint16_t            queue_id;    //
-    /* add other per-core buffers here if you need them, e.g.: */
-    // float *raw_input;
-    // float *input;
+    uint16_t            queue_id;    
+    uint32_t            next_free;
+
 };
-static struct worker_args worker_args[RTE_MAX_LCORE];
+static struct worker_args worker_args[MAX_CORES];
 
 
  double right_predictions=0;
@@ -482,8 +498,6 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
 
     struct rte_mempool *mbuf_pool = w->mbuf_pool;
     struct rte_hash    *flow_table = w->flow_table;
-    float *aux_a = w->buf_a;
-    float *aux_b = w->buf_b;
 
      uint16_t port;
      uint16_t ret;
@@ -572,7 +586,7 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
                             // int prediction = predict_mlp(features);
                             // uint64_t start_cycles = rte_rdtsc_precise();
 
-                            handle_packet(&key, pkt_len, pkt_time, flags_count, aux_a, aux_b);
+                            handle_packet(&key, pkt_len, pkt_time, flags_count, aux_a, aux_b, w);
 
                             // uint64_t end_cycles = rte_rdtsc_precise();
                             // uint64_t inference_cycles = end_cycles - start_cycles;
@@ -655,6 +669,36 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
      if (ret < 0)
          rte_panic("Cannot init EAL\n");
 
+
+    unsigned total_lcores = rte_lcore_count();
+    uint16_t q = 0;
+
+    for (unsigned core_id = 0; core_id < total_lcores; core_id++) {
+        struct worker_args *w = &worker_args[core_id];
+
+        /* bind each core to its own slice of flow_pool & its own hash */
+        w->flow_pool = flow_pools[core_id];
+        w->next_free = 0;
+
+        /* create a per-core hash table */
+        struct rte_hash_parameters p = hash_params;
+        char name[32];
+        snprintf(name, sizeof(name), "flow_tbl_%u", core_id);
+        p.name = name;
+        p.entries  = MAX_FLOWS_PER_CORE;
+        p.socket_id = rte_socket_id();
+        p.extra_flag |= RTE_HASH_EXTRA_FLAGS_MULTI_WRITER;  //maybe not needed
+        flow_tables[core_id] = rte_hash_create(&p);
+        if (!flow_tables[core_id])
+            rte_panic("Cannot create per-core hash[%u]\n", core_id);
+
+        w->flow_table = flow_tables[core_id];
+        w->queue_id   = q++;
+    }
+
+
+
+    /*
      hash_params.name = "flow_table";
      hash_params.entries = MAX_FLOWS;
      hash_params.key_len = sizeof(struct flow_key);
@@ -666,7 +710,7 @@ static struct worker_args worker_args[RTE_MAX_LCORE];
      if (!flow_table) {
          rte_panic("Failed to create hash table\n");
      }
-     
+     */
 
      argc -= ret;
      argv += ret;
