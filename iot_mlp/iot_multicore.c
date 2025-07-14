@@ -660,10 +660,13 @@ static struct worker_args worker_args[MAX_CORES];
             uint64_t hz = rte_get_tsc_hz();
             double latency_ns = ((double)latency_cycles / hz) * 1e9;
             static uint32_t latency_print_count = 0;
-            //if (latency_print_count < 1000) {
-                printf("Latency: %.2f. %d number of packets\n", latency_ns, nb_rx);
-                //latency_print_count++;
-            //}
+
+            if (latency_print_count < 1000000) {
+                if(latency_print_count % 1000 ==0){
+                    printf("Latency: %.2f. %d number of packets\n", latency_ns, nb_rx);
+                }
+                latency_print_count++;
+            }
             
 
 
