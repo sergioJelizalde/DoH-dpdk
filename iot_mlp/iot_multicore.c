@@ -524,8 +524,8 @@ handle_packet(struct flow_key   *key,
             (float)e->flag_bits_sum
         };
 
-        //int pred = predict_mlp(features, w->buf_a, w->buf_b);
-        int pred = predict_mlp_c_general(features, w->buf_a, w->buf_b);
+        int pred = predict_mlp(features, w->buf_a, w->buf_b);
+        //int pred = predict_mlp_c_general(features, w->buf_a, w->buf_b);
 
         // cleanup flows
         rte_hash_del_key(w->flow_table, key);
