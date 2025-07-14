@@ -80,7 +80,7 @@
 #define N_PACKETS 8
 #define INVALID_INDEX   UINT32_MAX
 
-#define MAX_FLOWS_PER_CORE 4096
+#define MAX_FLOWS_PER_CORE 1024
 #define MAX_CORES       RTE_MAX_LCORE
 
 struct worker_args {
