@@ -76,6 +76,7 @@
  //#define HASH_TABLE_SIZE (1 << 15) 
  
 #define ALIGN16 __attribute__((aligned(16)))
+#define MAX_SAMPLES 1000
 
 #define N_PACKETS 8
 #define INVALID_INDEX   UINT32_MAX
@@ -653,20 +654,8 @@ static struct worker_args worker_args[MAX_CORES];
                 }
             }
             
-            
             uint64_t end_cycles = rte_rdtsc_precise();
-            uint64_t latency_cycles = end_cycles - start_cycles;
-            // Convert to nanoseconds
-            uint64_t hz = rte_get_tsc_hz();
-            double latency_ns = ((double)latency_cycles / hz) * 1e9;
-            static uint32_t latency_print_count = 0;
-
-            if (latency_print_count < 1000000) {
-                if(latency_print_count % 1000 ==0){
-                    printf("Latency: %.2f. %d number of packets\n", latency_ns, nb_rx);
-                }
-                latency_print_count++;
-            }
+            if (latency_count < MAX_SAMPLES) latency_cycles[latency_count++] = end_cycles - start_cycles;
             
 
 
@@ -716,6 +705,27 @@ static struct worker_args worker_args[MAX_CORES];
      }
  }
  
+
+
+
+// signal handler 
+ static void sigint_handler(int signo) {
+    FILE *f = fopen("latencies.csv", "w");
+    if (!f) {
+        perror("fopen");
+        exit(1);
+    }
+    fprintf(f, "sample,cycles\n");
+    for (size_t i = 0; i < latency_count; i++) {
+        fprintf(f, "%zu,%lu\n", i, latency_cycles[i]);
+    }
+    fclose(f);
+    printf("Wrote %zu samples to latencies.csv\n", latency_count);
+    exit(0);
+}
+
+
+
  /* Initialization of Environment Abstraction Layer (EAL). 8< */
  int main(int argc, char **argv)
  {
@@ -730,6 +740,18 @@ static struct worker_args worker_args[MAX_CORES];
      ret = rte_eal_init(argc, argv);
      if (ret < 0)
          rte_panic("Cannot init EAL\n");
+
+
+    latency_cycles = malloc(sizeof(*latency_cycles) * MAX_SAMPLES);
+    if (!latency_cycles)
+        rte_exit(EXIT_FAILURE, "malloc failed\n");
+
+    // install SIGINT handler before you start lcore_main
+    struct sigaction sa = {
+        .sa_handler = sigint_handler,
+    };
+    sigaction(SIGINT, &sa, NULL);
+
 
     unsigned total_lcores = rte_lcore_count();
 

@@ -8,9 +8,9 @@ range 0 dst mac start 10:70:fd:b3:48:56
 range 0 dst mac min 10:70:fd:b3:48:56
 range 0 dst mac max 10:70:fd:b3:48:56
 
-range 0 src ip start 0.0.0.0
-range 0 src ip min 0.0.0.0
-range 0 src ip max 255.255.255.255
+range 0 src ip start 172.16.0.0
+range 0 src ip min 172.16.0.0
+range 0 src ip max 172.16.3.231
 range 0 src ip inc 0.0.0.1
 
 range 0 dst ip start 172.16.10.3
@@ -32,7 +32,6 @@ range 0 src port max 80
 enable 0 range
 range 0 proto tcp
 page main
-
 
 
 ## 1000 flows wuth 64 to 100 packet sizes
