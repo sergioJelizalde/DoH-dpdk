@@ -77,6 +77,8 @@
  
 #define ALIGN16 __attribute__((aligned(16)))
 #define MAX_SAMPLES 1000
+static uint64_t *latency_cycles;
+static size_t    latency_count = 0;
 
 #define N_PACKETS 8
 #define INVALID_INDEX   UINT32_MAX
