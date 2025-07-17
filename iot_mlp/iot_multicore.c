@@ -754,7 +754,10 @@ static struct worker_args worker_args[MAX_CORES];
     };
     sigaction(SIGINT, &sa, NULL);
 
-
+     uint64_t tsc_hz = rte_get_tsc_hz();
+    printf("TSC frequency: %lu Hz (%.2f GHz)\n",
+           tsc_hz, tsc_hz / 1e9);
+           
     unsigned total_lcores = rte_lcore_count();
 
     struct rte_hash_parameters p = {
