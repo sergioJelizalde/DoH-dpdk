@@ -724,7 +724,7 @@ static struct worker_args worker_args[MAX_CORES];
  
 
 
-
+/*
 // signal handler 
  static void sigint_handler(int signo) {
     FILE *f = fopen("latencies.csv", "w");
@@ -740,7 +740,7 @@ static struct worker_args worker_args[MAX_CORES];
     printf("Wrote %zu samples to latencies.csv\n", latency_count);
     exit(0);
 }
-
+*/
 
 
  /* Initialization of Environment Abstraction Layer (EAL). 8< */
@@ -763,12 +763,14 @@ static struct worker_args worker_args[MAX_CORES];
     if (!latency_cycles)
         rte_exit(EXIT_FAILURE, "malloc failed\n");
 
+        /*
     // install SIGINT handler before you start lcore_main
     struct sigaction sa = {
         .sa_handler = sigint_handler,
     };
     sigaction(SIGINT, &sa, NULL);
-
+    */
+    
      uint64_t tsc_hz = rte_get_tsc_hz();
     printf("TSC frequency: %lu Hz (%.2f GHz)\n",
            tsc_hz, tsc_hz / 1e9);
