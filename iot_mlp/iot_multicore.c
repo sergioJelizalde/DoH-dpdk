@@ -589,6 +589,7 @@ static struct worker_args worker_args[MAX_CORES];
             struct rte_mbuf *bufs[BURST_SIZE];
             
             uint16_t nb_rx = rte_eth_rx_burst(w->port_id, w->queue_id, bufs, BURST_SIZE);
+            printf(" -> burst returned %u pkts\n", nb_rx);
             if (unlikely(nb_rx == 0)) continue;
 
             // break;
