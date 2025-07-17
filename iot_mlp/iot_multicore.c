@@ -534,7 +534,7 @@ handle_packet(struct flow_key   *key,
         int pred = predict_mlp_c_general(features, w->buf_a, w->buf_b);
 
         // cleanup flows
-        rte_hash_del_key(w->flow_table, key);
+        //rte_hash_del_key(w->flow_table, key);
         reset_entry_per_core(w, index);
     }
 }
