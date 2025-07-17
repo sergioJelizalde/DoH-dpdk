@@ -662,6 +662,7 @@ static struct worker_args worker_args[MAX_CORES];
             uint64_t end_cycles = rte_rdtsc_precise();
             if (latency_count < MAX_SAMPLES) latency_cycles[latency_count++] = end_cycles - start_cycles;
             
+            /*
             //for testing number flows in every flow table per core
             static uint64_t stats_counter = 0;
             stats_counter += nb_rx;  // or just ++stats_counter for per‐packet
@@ -672,7 +673,7 @@ static struct worker_args worker_args[MAX_CORES];
                     rte_lcore_id(), used);
                 stats_counter = 0;
             }
-            
+            */
 
             if (unlikely(nb_rx == 0))
                 continue;
