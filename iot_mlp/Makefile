@@ -25,8 +25,8 @@ PC_FILE := $(shell $(PKGCONF) --path libdpdk 2>/dev/null)
 CFLAGS += -O3 $(shell $(PKGCONF) --cflags libdpdk)
 #CFLAGS += -march=armv8-a+crc
 CFLAGS += -mcpu=cortex-a78ae
-LDFLAGS_SHARED = $(shell $(PKGCONF) --libs libdpdk) -ljansson -lz
-LDFLAGS_STATIC = $(shell $(PKGCONF) --static --libs libdpdk) -ljansson -lz
+LDFLAGS_SHARED = $(shell $(PKGCONF) --libs libdpdk)
+LDFLAGS_STATIC = $(shell $(PKGCONF) --static --libs libdpdk)
 
 ifeq ($(MAKECMDGOALS),static)
 # check for broken pkg-config
