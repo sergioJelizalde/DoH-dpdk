@@ -402,7 +402,7 @@ static inline uint32_t
 allocate_entry_per_core(struct worker_args *w)
 {
     if (w->next_free >= MAX_FLOWS_PER_CORE){
-        printf("inavalid index")
+        printf("invalid index");
         return INVALID_INDEX;
     }
         
