@@ -67,7 +67,7 @@
  
  #define QUEUE_SIZE 256
  
- #define BURST_SIZE 32
+ #define BURST_SIZE 64
  
  // #define QUEUE_SIZE (1 << 6)
  
@@ -773,7 +773,7 @@ static struct worker_args worker_args[MAX_CORES];
     */
 
 
-    
+
      uint64_t tsc_hz = rte_get_tsc_hz();
     printf("TSC frequency: %lu Hz (%.2f GHz)\n",
            tsc_hz, tsc_hz / 1e9);
