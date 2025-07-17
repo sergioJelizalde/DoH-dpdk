@@ -76,7 +76,7 @@
  //#define HASH_TABLE_SIZE (1 << 15) 
  
 #define ALIGN16 __attribute__((aligned(16)))
-#define MAX_SAMPLES 1000
+#define MAX_SAMPLES 10000
 static uint64_t *latency_cycles;
 static size_t    latency_count = 0;
 
