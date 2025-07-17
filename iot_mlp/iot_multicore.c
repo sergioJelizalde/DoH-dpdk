@@ -830,6 +830,16 @@ static struct worker_args worker_args[MAX_CORES];
          printf("port %u initialized\n",portid);
      };
 
+     RTE_ETH_FOREACH_DEV(portid) {
+        struct rte_eth_link link;
+        rte_eth_link_get_nowait(portid, &link);
+        printf("Port %u Link %s — speed %u Mbps\n",
+            portid,
+            link.link_status ? "UP" : "DOWN",
+            link.link_speed);
+     }
+
+
      // find maximum neurons 
         int max_neurons = 0;
         for (int i = 0; i <= NUM_LAYERS; i++)
