@@ -52,9 +52,9 @@
  //for bluefield2
  #include <arm_neon.h>
 
-//#include "mlp_8.h"
+#include "mlp_8.h"
 //#include "mlp_32.h"
-#include "mlp_64_32.h"
+//#include "mlp_64_32.h"
 //#include "mlp_128_64_32.h"
 //#include "mlp_256_128_64_32.h"
 
@@ -76,9 +76,10 @@
  //#define HASH_TABLE_SIZE (1 << 15) 
  
 #define ALIGN16 __attribute__((aligned(16)))
-#define MAX_SAMPLES 10000
-static uint64_t *latency_cycles;
-static size_t    latency_count = 0;
+
+//#define MAX_SAMPLES 10000
+//static uint64_t *latency_cycles;
+//static size_t    latency_count = 0;
 
 #define N_PACKETS 8
 #define INVALID_INDEX   UINT32_MAX
@@ -530,7 +531,7 @@ handle_packet(struct flow_key   *key,
             (float)e->flag_bits_sum
         };
 
-        //int pred = predict_mlp(features, w->buf_a, w->buf_b);
+        int pred = predict_mlp(features, w->buf_a, w->buf_b);
         //int pred = predict_mlp_c_general(features, w->buf_a, w->buf_b);
 
         // cleanup flows
@@ -659,8 +660,8 @@ static struct worker_args worker_args[MAX_CORES];
                 }
             }
             
-            uint64_t end_cycles = rte_rdtsc_precise();
-            if (latency_count < MAX_SAMPLES) latency_cycles[latency_count++] = end_cycles - start_cycles;
+            //uint64_t end_cycles = rte_rdtsc_precise();
+            //if (latency_count < MAX_SAMPLES) latency_cycles[latency_count++] = end_cycles - start_cycles;
             
             /*
             //for testing number flows in every flow table per core
