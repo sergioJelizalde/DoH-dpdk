@@ -179,7 +179,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t number_rings)
             .rss_conf = {
                 .rss_key = NULL,
                 //.rss_hf  = RTE_ETH_RSS_IPV4 | RTE_ETH_RSS_TCP,
-                .rss_hf  = RTE_ETH_RSS_NONFRAG_IPV4_TCP | RTE_ETH_RSS_TCP, 
+                .rss_hf  = RTE_ETH_RSS_NONFRAG_IPV4_TCP | RTE_ETH_RSS_NONFRAG_IPV4_TCP, 
             },
         },
         .txmode = {
