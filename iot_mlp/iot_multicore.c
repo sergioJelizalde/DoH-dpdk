@@ -386,7 +386,7 @@ static int predict_mlp(const float *in_features, float *buf_a, float *buf_b) {
         );
         float *tmp = in_buf; in_buf = out_buf; out_buf = tmp;
     }
-
+    printf("inference");
     // argmax
     int final_size = LAYER_SIZES[NUM_LAYERS], best = 0;
     float best_v = in_buf[0];
