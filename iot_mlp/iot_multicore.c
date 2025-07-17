@@ -693,11 +693,6 @@ static struct worker_args worker_args[MAX_CORES];
 
             
             uint16_t nb_tx = rte_eth_tx_burst(w->port_id, w->queue_id, bufs, nb_rx);
-            // insert this:
-            struct rte_eth_stats stats;
-            rte_eth_stats_get(w->port_id, &stats);
-            printf("Core %u: burst returned %u, NIC opackets=%" PRIu64 ", oerrors=%" PRIu64 "\n",
-                rte_lcore_id(), nb_tx, stats.opackets, stats.oerrors);
 
             //printf("Core %u: burst returned %u (dropped %u)\n",
                 //rte_lcore_id(), nb_tx, nb_rx - nb_tx);
