@@ -651,7 +651,7 @@ static struct worker_args worker_args[MAX_CORES];
                         // uint64_t start_cycles = rte_rdtsc_precise();
 
                         handle_packet(&key, pkt_len, pkt_time, flags_count, w);
-
+                        bufs[i]->ol_flags = 0;
                         // uint64_t end_cycles = rte_rdtsc_precise();
                         // uint64_t inference_cycles = end_cycles - start_cycles;
 
@@ -685,7 +685,7 @@ static struct worker_args worker_args[MAX_CORES];
             //printf("Core %u: about to burst %u pkts on port %u queue %u\n",
                 //rte_lcore_id(), nb_rx, w->port_id, w->queue_id);
 
-            bufs[i]->ol_flags = 0;
+            
             uint16_t nb_tx = rte_eth_tx_burst(w->port_id, w->queue_id, bufs, nb_rx);
 
             //printf("Core %u: burst returned %u (dropped %u)\n",
