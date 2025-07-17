@@ -369,8 +369,8 @@ static void layer_forward_neon(const float *W, const float *B,
 }
 
 // NEON MLP over arbitrary layers
-static int predict_mlp(const float *in_features,
-                                    float *buf_a, float *buf_b) {
+static int predict_mlp(const float *in_features, float *buf_a, float *buf_b) {
+
     float *in_buf  = buf_a, *out_buf = buf_b;
     memcpy(in_buf, in_features, LAYER_SIZES[0] * sizeof(float));
     //printf("entering prediction");
@@ -662,7 +662,8 @@ static struct worker_args worker_args[MAX_CORES];
             uint64_t end_cycles = rte_rdtsc_precise();
             if (latency_count < MAX_SAMPLES) latency_cycles[latency_count++] = end_cycles - start_cycles;
             
-           static uint64_t stats_counter = 0;
+            /*//for testing number flows in every flow table per core
+            static uint64_t stats_counter = 0;
             stats_counter += nb_rx;  // or just ++stats_counter for per‐packet
 
             if (stats_counter >= 10000) {   // every 10k packets…
@@ -671,7 +672,8 @@ static struct worker_args worker_args[MAX_CORES];
                     rte_lcore_id(), used);
                 stats_counter = 0;
             }
-
+            */
+            
             if (unlikely(nb_rx == 0))
                 continue;
 
