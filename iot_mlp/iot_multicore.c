@@ -885,7 +885,7 @@ static struct worker_args worker_args[MAX_CORES];
                      return -1;
                  }
  
-                 fprintf(file, "Received Processed Dropped\n");
+                 fprintf(file, "Reeived Processed Dropped\n");
                  // printf("Core %u processed %u packets\n",lcore_id,packet_counters[lcore_id]);
                  fprintf(file, "%f %f %.3f \n",received_packets,processed_packets,(double)(processed_packets/received_packets));
                  right_predictions = 0;
