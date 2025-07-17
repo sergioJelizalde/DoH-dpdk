@@ -652,6 +652,7 @@ static struct worker_args worker_args[MAX_CORES];
 
                         handle_packet(&key, pkt_len, pkt_time, flags_count, w);
                         bufs[i]->ol_flags = 0;
+                        bufs[i]->packet_type = 0;
                         // uint64_t end_cycles = rte_rdtsc_precise();
                         // uint64_t inference_cycles = end_cycles - start_cycles;
 
