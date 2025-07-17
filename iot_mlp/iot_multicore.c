@@ -178,8 +178,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t number_rings)
         .rx_adv_conf = {
             .rss_conf = {
                 .rss_key = NULL,
-                //.rss_hf  = RTE_ETH_RSS_IPV4 | RTE_ETH_RSS_TCP,
-                .rss_hf  = RTE_ETH_RSS_NONFRAG_IPV4_TCP | RTE_ETH_RSS_NONFRAG_IPV4_TCP, 
+                .rss_hf  = RTE_ETH_RSS_IPV4 | RTE_ETH_RSS_TCP,
             },
         },
         .txmode = {
@@ -284,10 +283,6 @@ get_hw_timestamp(const struct rte_mbuf *mbuf)
 }
 
 // End of HW timetamps
-
-
-
-
 
 // Fast piecewise sigmoid approximation
 static inline float fast_sigmoid(float x) {
@@ -656,8 +651,6 @@ static struct worker_args worker_args[MAX_CORES];
                         // uint64_t start_cycles = rte_rdtsc_precise();
 
                         handle_packet(&key, pkt_len, pkt_time, flags_count, w);
-                        bufs[i]->ol_flags = 0;
-                        bufs[i]->packet_type = 0;
                         // uint64_t end_cycles = rte_rdtsc_precise();
                         // uint64_t inference_cycles = end_cycles - start_cycles;
 
