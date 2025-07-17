@@ -54,9 +54,9 @@
 
 //#include "mlp_8.h"
 //#include "mlp_32.h"
-#include "mlp_64_32.h"
+//#include "mlp_64_32.h"
 //#include "mlp_128_64_32.h"
-//#include "mlp_256_128_64_32.h"
+#include "mlp_256_128_64_32.h"
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -757,7 +757,7 @@ static struct worker_args worker_args[MAX_CORES];
      uint64_t tsc_hz = rte_get_tsc_hz();
     printf("TSC frequency: %lu Hz (%.2f GHz)\n",
            tsc_hz, tsc_hz / 1e9);
-           
+
     unsigned total_lcores = rte_lcore_count();
 
     struct rte_hash_parameters p = {
