@@ -688,7 +688,7 @@ static struct worker_args worker_args[MAX_CORES];
                 continue;
             //printf("Core %u: about to burst %u pkts on port %u queue %u\n",
                 //rte_lcore_id(), nb_rx, w->port_id, w->queue_id);
-
+            bufs[i]->ol_flags = 0;
             uint16_t nb_tx = rte_eth_tx_burst(w->port_id, w->queue_id, bufs, nb_rx);
 
             //printf("Core %u: burst returned %u (dropped %u)\n",
