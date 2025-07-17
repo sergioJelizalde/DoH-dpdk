@@ -642,7 +642,12 @@ static struct worker_args worker_args[MAX_CORES];
                         key.protocol = IPv4NextProtocol;
 
                         uint16_t pkt_len = pIP4Hdr->total_length;
-                        uint64_t pkt_time = is_timestamp_enabled(bufs[i]) ? get_hw_timestamp(bufs[i]) : 0;    
+                        //uint64_t pkt_time = is_timestamp_enabled(bufs[i]) ? get_hw_timestamp(bufs[i]) : 0; 
+                        if (is_timestamp_enabled(bufs[i])) {
+                            uint64_t pkt_time = get_hw_timestamp(bufs[i]);
+                            // clear only the RX timestamp bit:
+                            bufs[i]->ol_flags &= ~timestamp_rx_dynflag;
+                        }   
                         //printf("Pkt time: %" PRIu64 " cycles\n", pkt_time);
                         // printf("TSC frequency: %lu Hz\n", hz);
                         
