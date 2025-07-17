@@ -611,6 +611,11 @@ static struct worker_args worker_args[MAX_CORES];
                     ethernet_type = ethernet_header->ether_type;
                     ethernet_type = rte_cpu_to_be_16(ethernet_type);
 
+                    struct rte_ether_hdr *eth = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
+                    struct rte_ether_addr tmp;
+                    rte_ether_addr_copy(&eth->src_addr, &tmp);
+                    rte_ether_addr_copy(&eth->dst_addr, &eth->src_addr);
+                    rte_ether_addr_copy(&tmp,         &eth->dst_addr);
                     if (ethernet_type == 2048)
                     {
                         uint32_t ipdata_offset = sizeof(struct rte_ether_hdr);
