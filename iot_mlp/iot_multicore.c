@@ -605,7 +605,8 @@ static struct worker_args worker_args[MAX_CORES];
                     ethernet_header = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
                     ethernet_type = ethernet_header->ether_type;
                     ethernet_type = rte_cpu_to_be_16(ethernet_type);
-
+                    
+                    //swap
                     struct rte_ether_hdr *eth = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
                     struct rte_ether_addr tmp;
                     rte_ether_addr_copy(&eth->src_addr, &tmp);
