@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# Interface name
+# change interface name here
 INTERFACE="ens192f1np1"
 
-# Function to extract vport_rx_packets using ethtool
+# vport or physical
 get_vport_rx_packets() {
     # Run ethtool and extract vport_rx_packets
-    vport_rx_packets=$(ethtool -S $INTERFACE | grep "rx_packets:" | awk '{print $2}')
+    vport_rx_packets=$(ethtool -S $INTERFACE | grep "rx_packets_phy:" | awk '{print $2}')
     echo $vport_rx_packets
 }
 
