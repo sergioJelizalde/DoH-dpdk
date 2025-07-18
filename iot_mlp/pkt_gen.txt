@@ -74,9 +74,9 @@ page main
 
 ## fabric
 page range
-range 0 src mac start 02:37:be:04:de:bf
-range 0 src mac min 02:37:be:04:de:bf
-range 0 src mac max 02:37:be:04:de:bf
+range 0 src mac start 04:3f:72:b7:15:74
+range 0 src mac min 04:3f:72:b7:15:74
+range 0 src mac max 04:3f:72:b7:15:74
 
 range 0 dst mac start 38:25:f3:fc:98:1e
 range 0 dst mac min 38:25:f3:fc:98:1e
@@ -115,3 +115,4 @@ sudo ./build/iot_app -l 0-3 -n 4 -a 0000:03:00.0 -- -p 0x1
 
 # running pkt gen with multiple cores
 sudo pktgen -l 0-4 -n 4 -a 07:00.0 -- -P -m "[1-4].0"
+sudo pktgen -l 0-8 -n 4 -a 07:00.0 -- -P -m "[1-4:5-8].0"
