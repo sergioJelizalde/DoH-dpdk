@@ -791,6 +791,8 @@ static struct worker_args worker_args[MAX_CORES];
     printf("TSC frequency: %lu Hz (%.2f GHz)\n",
            tsc_hz, tsc_hz / 1e9);
 
+    printf("DPDK version: %s\n", rte_version());
+
     unsigned total_lcores = rte_lcore_count();
 
     struct rte_hash_parameters p = {
@@ -875,7 +877,7 @@ static struct worker_args worker_args[MAX_CORES];
     lcore_main(w_master);
 
    
-    printf("DPDK version: %s\n", rte_version());
+    
 
      char command[50];
      
