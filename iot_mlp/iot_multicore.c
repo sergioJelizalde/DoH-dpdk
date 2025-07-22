@@ -25,7 +25,8 @@
  #include <rte_mbuf.h>
  #include <rte_mbuf_dyn.h>
  #include <fcntl.h>
- 
+ #include <rte_version.h>
+
  #include <stdio.h>
  #include <stdlib.h>
  #include <string.h>
@@ -873,7 +874,9 @@ static struct worker_args worker_args[MAX_CORES];
     // (mbuf_pool, flow_table, flow_pool, next_free, queue_id already set above)
     lcore_main(w_master);
 
- 
+   
+    printf("DPDK version: %s\n", rte_version());
+
      char command[50];
      
      while (1) {
