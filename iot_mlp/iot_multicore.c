@@ -795,6 +795,7 @@ static struct worker_args worker_args[MAX_CORES];
 
     unsigned total_lcores = rte_lcore_count();
 
+    
     struct rte_hash_parameters p = {
     .entries           = MAX_FLOWS_PER_CORE,
     .key_len           = sizeof(struct flow_key),
