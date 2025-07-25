@@ -31,10 +31,10 @@ create_mirror_rule(uint16_t src_port, uint16_t dst_port_id, struct rte_flow_erro
     };
 
     struct rte_flow_action_port_id mirror = { .id = dst_port_id };
-    struct rte_flow_action actions[] = {
-        { .type = RTE_FLOW_ACTION_TYPE_PORT_ID, .conf = &mirror }, // mirror to host
-        { .type = RTE_FLOW_ACTION_TYPE_PASSTHRU },                 // allow packet to DPDK path
-        { .type = RTE_FLOW_ACTION_TYPE_END }
+   struct rte_flow_action actions[] = {
+    { .type = RTE_FLOW_ACTION_TYPE_PORT_ID, .conf = &mirror },
+    { .type = RTE_FLOW_ACTION_TYPE_PASSTHRU },
+    { .type = RTE_FLOW_ACTION_TYPE_END }
     };
 
     struct rte_flow *flow = rte_flow_create(src_port, &attr, pattern, actions, error);
@@ -113,8 +113,11 @@ int main(int argc, char **argv) {
     rte_eth_promiscuous_enable(bf_port_id);
     printf("BlueField port started with RSS across %d queues\n", RXQ);
 
-    // Create mirror rule: pf0hpf (DPDK) → p0 (host) + passthrough
-    mirror_flow = create_mirror_rule(bf_port_id, host_port_id, &error);
+    // First mirror rule: p0 -> pf0hpf
+    create_mirror_rule(p0, pf0hpf_id);
+
+    // Second mirror rule: p0 -> enp3s0f0
+    create_mirror_rule(p0, enp3s0f0_id);
 
     unsigned lcore_id;
     uint16_t queue_id = 0;
