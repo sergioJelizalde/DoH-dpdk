@@ -107,7 +107,7 @@ int main(int argc, char **argv) {
     mirror_flow_pf = create_mirror_rule(p0_port_id, pf0hpf_port_id, &error);
     mirror_flow_sf = create_mirror_rule(p0_port_id, sf2_port_id, &error);
 
-    RTE_LCORE_FOREACH_WORKER(uint16_t lcore_id) {
+    RTE_LCORE_FOREACH_WORKER(lcore_id) {
         rte_eal_remote_launch(lcore_main_loop, (void *)(uintptr_t)0, lcore_id);
         break;  // Just one core for demo
     }
