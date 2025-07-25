@@ -21,8 +21,7 @@ static volatile uint64_t core_pkt_counter[RTE_MAX_LCORE] = {0};
 static struct rte_flow *
 create_mirror_rule(uint16_t src_port, uint16_t dst_port_id, struct rte_flow_error *error) {
     struct rte_flow_attr attr = {
-    .ingress = 1,
-    .transfer = 1,  // required for port-based mirror/forward actions
+    .transfer = 1,  // required for mirroring between physical/virtual ports
 };
 
     struct rte_flow_item pattern[] = {
