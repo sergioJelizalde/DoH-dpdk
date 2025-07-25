@@ -107,9 +107,12 @@ int main(int argc, char **argv) {
     mirror_flow_pf = create_mirror_rule(p0_port_id, pf0hpf_port_id, &error);
     mirror_flow_sf = create_mirror_rule(p0_port_id, sf2_port_id, &error);
 
+    unsigned lcore_id;
+    uint16_t queue_id = 0;
     RTE_LCORE_FOREACH_WORKER(lcore_id) {
-        rte_eal_remote_launch(lcore_main_loop, (void *)(uintptr_t)0, lcore_id);
-        break;  // Just one core for demo
+        if (queue_id >= RXQ) break;
+        rte_eal_remote_launch(lcore_main_loop, (void *)(uintptr_t)queue_id, lcore_id);
+        queue_id++;
     }
 
     printf("Press Enter to exit...\n");
