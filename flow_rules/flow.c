@@ -102,6 +102,17 @@ int main(int argc, char **argv) {
         rte_exit(EXIT_FAILURE, "Failed to start pf0hpf\n");
 
     rte_eth_promiscuous_enable(pf0hpf_port_id);
+
+    uint16_t nb_ports = rte_eth_dev_count_avail();
+    printf("Available DPDK ports: %u\n", nb_ports);
+
+    for (uint16_t i = 0; i < nb_ports; i++) {
+        struct rte_eth_dev_info dev_info;
+        rte_eth_dev_info_get(i, &dev_info);
+        printf("Port %u: driver name = %s, if_index = %d\n", i, dev_info.driver_name, dev_info.if_index);
+    }
+
+
     printf("Started pf0hpf (port %d)\n", pf0hpf_port_id);
 
     mirror_flow_pf = create_mirror_rule(p0_port_id, pf0hpf_port_id, &error);
