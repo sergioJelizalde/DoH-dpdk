@@ -7,6 +7,7 @@
 #include <rte_ethdev.h>
 #include <rte_flow.h>
 #include <rte_mbuf.h>
+#include <rte_lcore.h>
 
 #define RXQ 3
 #define TXQ 3
@@ -14,6 +15,7 @@
 #define BURST_SIZE 64
 
 static int port_id = 0;
+static volatile uint64_t core_pkt_counter[RTE_MAX_LCORE] = {0};
 
 static struct rte_flow *
 create_drop_rule(uint16_t port_id, enum rte_flow_item_type l4_type, struct rte_flow_error *error) {
@@ -50,6 +52,32 @@ create_drop_rule(uint16_t port_id, enum rte_flow_item_type l4_type, struct rte_f
         printf("Drop rule installed for %s\n", l4_type == RTE_FLOW_ITEM_TYPE_TCP ? "TCP" : "UDP");
     }
     return flow;
+}
+
+static int lcore_main_loop(void *arg) {
+    uint16_t queue_id = (uintptr_t)arg;
+    struct rte_mbuf *bufs[BURST_SIZE];
+
+    while (1) {
+        uint16_t nb_rx = rte_eth_rx_burst(port_id, queue_id, bufs, BURST_SIZE);
+        if (nb_rx == 0) continue;
+
+        for (uint16_t i = 0; i < nb_rx; i++) {
+            struct rte_ether_hdr *eth = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
+            // Swap MAC addresses (reflect packet)
+            struct rte_ether_addr tmp;
+            rte_ether_addr_copy(&eth->src_addr, &tmp);
+            rte_ether_addr_copy(&eth->dst_addr, &eth->src_addr);
+            rte_ether_addr_copy(&tmp, &eth->dst_addr);
+        }
+
+        uint16_t nb_tx = rte_eth_tx_burst(port_id, queue_id, bufs, nb_rx);
+        for (uint16_t i = nb_tx; i < nb_rx; i++)
+            rte_pktmbuf_free(bufs[i]);
+
+        core_pkt_counter[rte_lcore_id()] += nb_rx;
+    }
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -96,15 +124,32 @@ int main(int argc, char **argv) {
     rte_eth_promiscuous_enable(port_id);
     printf("Port %d started with RSS across %d queues\n", port_id, RXQ);
 
-    // Create drop rules
     drop_tcp = create_drop_rule(port_id, RTE_FLOW_ITEM_TYPE_TCP, &error);
     drop_udp = create_drop_rule(port_id, RTE_FLOW_ITEM_TYPE_UDP, &error);
+
+    // Launch worker cores
+    unsigned lcore_id;
+    uint16_t queue_id = 0;
+    RTE_LCORE_FOREACH_WORKER(lcore_id) {
+        if (queue_id >= RXQ) break;
+        rte_eal_remote_launch(lcore_main_loop, (void *)(uintptr_t)queue_id, lcore_id);
+        queue_id++;
+    }
+
+    // Main core also handles one queue
+    if (queue_id < RXQ)
+        lcore_main_loop((void *)(uintptr_t)queue_id);
 
     printf("Press Enter to exit...\n");
     getchar();
 
     if (drop_tcp) rte_flow_destroy(port_id, drop_tcp, &error);
     if (drop_udp) rte_flow_destroy(port_id, drop_udp, &error);
+
+    for (int i = 0; i < RTE_MAX_LCORE; i++) {
+        if (core_pkt_counter[i] > 0)
+            printf("Core %d processed %lu packets\n", i, core_pkt_counter[i]);
+    }
 
     rte_eth_dev_stop(port_id);
     rte_eth_dev_close(port_id);

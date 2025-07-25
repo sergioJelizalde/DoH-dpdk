@@ -109,6 +109,43 @@ range 0 proto tcp
 page main
 
 
+#flow rules testing
+
+page range
+range 0 src mac start 04:3f:72:b7:15:74
+range 0 src mac min 04:3f:72:b7:15:74
+range 0 src mac max 04:3f:72:b7:15:74
+
+range 0 dst mac start 38:25:f3:fc:98:1e
+range 0 dst mac min 38:25:f3:fc:98:1e
+range 0 dst mac max 38:25:f3:fc:98:1e
+
+range 0 src ip start 172.16.0.0
+range 0 src ip min 172.16.0.0
+range 0 src ip max 172.16.3.231
+range 0 src ip inc 0.0.0.1
+
+range 0 dst ip start 172.16.10.3
+range 0 dst ip min 172.16.10.3
+range 0 dst ip max 172.16.10.3
+
+range 0 size start 64
+range 0 size min 64
+range 0 size max 100
+range 0 size inc 1
+
+range 0 dst port start 1234
+range 0 dst port min 1234
+range 0 dst port max 1234
+
+range 0 src port start 80
+range 0 src port min 80
+range 0 src port max 80
+
+enable 0 range
+range 0 proto tcp
+page main
+
 
 # running the dpdk app
 sudo ./build/iot_app -l 0-3 -n 4 -a 0000:03:00.0 -- -p 0x1          
