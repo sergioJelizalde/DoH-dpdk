@@ -143,7 +143,7 @@ range 0 src port min 80
 range 0 src port max 80
 
 enable 0 range
-range 0 proto tcp
+range 0 proto udp
 page main
 
 
