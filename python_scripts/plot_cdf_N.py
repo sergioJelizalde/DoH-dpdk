@@ -9,6 +9,7 @@ df = pd.read_csv(csv_path)
 # Filter out flows with only 1 packet
 df_multi = df[df["num_packets"] > 1]
 
+
 # Extract number of packets per flow (after filtering)
 packet_counts = df_multi["num_packets"].values
 packet_counts_sorted = np.sort(packet_counts)
