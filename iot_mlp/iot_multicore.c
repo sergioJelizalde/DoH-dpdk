@@ -285,6 +285,7 @@ get_hw_timestamp(const struct rte_mbuf *mbuf)
 
 // End of HW timetamps
 
+
 // Fast piecewise sigmoid approximation
 static inline float fast_sigmoid(float x) {
     if (x <= -4.0f) return 0.0f;
