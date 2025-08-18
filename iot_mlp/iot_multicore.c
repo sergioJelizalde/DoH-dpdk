@@ -531,6 +531,12 @@ handle_packet(struct flow_key   *key,
 
         int pred = predict_mlp(features, w->buf_a, w->buf_b);
         //int pred = predict_mlp_c_general(features, w->buf_a, w->buf_b);
+        // print flow
+        // Print flow ID + classification
+        printf("Flow %u:%u -> %u:%u proto %u classified as %d\n",
+        key->src_ip, key->src_port,
+        key->dst_ip, key->dst_port,
+        key->protocol, pred);
 
         // cleanup flows
         //rte_hash_del_key(w->flow_table, key);
