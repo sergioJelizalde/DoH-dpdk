@@ -540,8 +540,8 @@ handle_packet(struct flow_key   *key,
 
         // cleanup flows
         //rte_hash_del_key(w->flow_table, key);
-        reset_entry_per_core(w, index);
-        
+        //reset_entry_per_core(w, index);
+
     }
 }
 
