@@ -539,8 +539,8 @@ handle_packet(struct flow_key   *key,
         key->protocol, pred);
 
         // cleanup flows
-        rte_hash_del_key(w->flow_table, key);
-        reset_entry_per_core(w, index);
+        //rte_hash_del_key(w->flow_table, key);
+        //reset_entry_per_core(w, index);
 
     }
 }
