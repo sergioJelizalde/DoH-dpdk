@@ -511,7 +511,7 @@ handle_packet(struct flow_key   *key,
     update_flow_entry(e, pkt_len, now, flags_count);
 
     // once N_PACKETS seen, build features & (optionally) predict
-    if (e->pkt_count >= N_PACKETS) {
+    if (e->pkt_count == N_PACKETS-1) {
         double hz = (double)rte_get_tsc_hz();
 
         float mean_len = (float)(e->len_sum   / (double)e->pkt_count);
@@ -539,8 +539,8 @@ handle_packet(struct flow_key   *key,
         key->protocol, pred);
 
         // cleanup flows
-        //rte_hash_del_key(w->flow_table, key);
-        //reset_entry_per_core(w, index);
+        rte_hash_del_key(w->flow_table, key);
+        reset_entry_per_core(w, index);
 
     }
 }
