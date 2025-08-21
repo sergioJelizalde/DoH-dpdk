@@ -82,6 +82,10 @@
 //static uint64_t *latency_cycles;
 //static size_t    latency_count = 0;
 
+
+static FILE *g_feat_csv = NULL;
+static rte_spinlock_t g_feat_lock = RTE_SPINLOCK_INITIALIZER;
+
 #define N_PACKETS 8
 #define INVALID_INDEX   UINT32_MAX
 
@@ -284,6 +288,34 @@ get_hw_timestamp(const struct rte_mbuf *mbuf)
 }
 
 // End of HW timetamps
+
+
+static inline void ip_to_str(uint32_t ip_host, char out[INET_ADDRSTRLEN]) {
+    // ip_host is in host byte order; convert to network for inet_ntop
+    struct in_addr ia;
+    ia.s_addr = rte_cpu_to_be_32(ip_host);
+    inet_ntop(AF_INET, &ia, out, INET_ADDRSTRLEN);
+}
+
+static inline void log_features_csv(const struct flow_key *key,
+                                    const float f[8]) {
+    if (!g_feat_csv) return;
+
+    char sip[INET_ADDRSTRLEN], dip[INET_ADDRSTRLEN];
+    ip_to_str(key->src_ip, sip);
+    ip_to_str(key->dst_ip, dip);
+
+    // one line per flow: 5-tuple + 8 features
+    rte_spinlock_lock(&g_feat_lock);
+    fprintf(g_feat_csv,
+            "%s,%u,%s,%u,%u,%.0f,%.0f,%.3f,%.3f,%.3f,%.3f,%.0f,%.0f\n",
+            sip, key->src_port,
+            dip, key->dst_port,
+            key->protocol,
+            f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
+    rte_spinlock_unlock(&g_feat_lock);
+}
+
 
 
 // Fast piecewise sigmoid approximation
@@ -530,13 +562,14 @@ handle_packet(struct flow_key   *key,
         };
 
         int pred = predict_mlp(features, w->buf_a, w->buf_b);
+        log_features_csv(key, features);
         //int pred = predict_mlp_c_general(features, w->buf_a, w->buf_b);
         // print flow
         // Print flow ID + classification
-        printf("Flow %u:%u -> %u:%u proto %u classified as %d\n",
-        key->src_ip, key->src_port,
-        key->dst_ip, key->dst_port,
-        key->protocol, pred);
+        //printf("Flow %u:%u -> %u:%u proto %u classified as %d\n",
+        //key->src_ip, key->src_port,
+        //key->dst_ip, key->dst_port,
+        //key->protocol, pred);
 
         // cleanup flows
         //rte_hash_del_key(w->flow_table, key);
@@ -779,7 +812,19 @@ static struct worker_args worker_args[MAX_CORES];
      if (ret < 0)
          rte_panic("Cannot init EAL\n");
 
+    const char *csv_path = getenv("FLOW_CSV");
+    if (!csv_path) csv_path = "flow_features.csv";
 
+    g_feat_csv = fopen(csv_path, "w");
+    if (!g_feat_csv)
+        rte_exit(EXIT_FAILURE, "Cannot open CSV output: %s\n", csv_path);
+
+    // line-buffered so rows flush even if the process is killed
+    setvbuf(g_feat_csv, NULL, _IOLBF, 0);
+
+    fprintf(g_feat_csv,
+            "src_ip,src_port,dst_ip,dst_port,proto,"
+        "len_min,len_max,mean_len,iat_min_us,iat_max_us,mean_iat_us,total_len,flag_bits_sum\n");
 
     /*
     latency_cycles = malloc(sizeof(*latency_cycles) * MAX_SAMPLES);
