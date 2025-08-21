@@ -52,8 +52,6 @@
  
  //for bluefield2
  #include <arm_neon.h>
- #include <arpa/inet.h>   // inet_ntop
- #include <netinet/in.h>  // struct in_addr
 
 
 //#include "mlp_8.h"
@@ -87,7 +85,6 @@
 
 
 static FILE *g_feat_csv = NULL;
-static rte_spinlock_t g_feat_lock = RTE_SPINLOCK_INITIALIZER;
 
 #define N_PACKETS 8
 #define INVALID_INDEX   UINT32_MAX
@@ -292,31 +289,18 @@ get_hw_timestamp(const struct rte_mbuf *mbuf)
 
 // End of HW timetamps
 
-
-static inline void ip_to_str(uint32_t ip_host, char out[INET_ADDRSTRLEN]) {
-    // ip_host is in host byte order; convert to network for inet_ntop
-    struct in_addr ia;
-    ia.s_addr = rte_cpu_to_be_32(ip_host);
-    inet_ntop(AF_INET, &ia, out, INET_ADDRSTRLEN);
-}
-
-static inline void log_features_csv(const struct flow_key *key,
-                                    const float f[8]) {
+static inline void log_features_csv(const struct flow_key *key, const float f[8]) {
     if (!g_feat_csv) return;
 
-    char sip[INET_ADDRSTRLEN], dip[INET_ADDRSTRLEN];
-    ip_to_str(key->src_ip, sip);
-    ip_to_str(key->dst_ip, dip);
-
-    // one line per flow: 5-tuple + 8 features
-    rte_spinlock_lock(&g_feat_lock);
     fprintf(g_feat_csv,
-            "%s,%u,%s,%u,%u,%.0f,%.0f,%.3f,%.3f,%.3f,%.3f,%.0f,%.0f\n",
-            sip, key->src_port,
-            dip, key->dst_port,
-            key->protocol,
-            f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
-    rte_spinlock_unlock(&g_feat_lock);
+            "%u,%u,%u,%u,%u,%.0f,%.0f,%.6f,%.6f,%.6f,%.6f,%.0f,%.0f\n",
+            (unsigned)key->src_ip,
+            (unsigned)key->src_port,
+            (unsigned)key->dst_ip,
+            (unsigned)key->dst_port,
+            (unsigned)key->protocol,
+            (double)f[0], (double)f[1], (double)f[2], (double)f[3],
+            (double)f[4], (double)f[5], (double)f[6], (double)f[7]);
 }
 
 
@@ -799,6 +783,12 @@ static struct worker_args worker_args[MAX_CORES];
 }
 */
 
+static void on_terminate(int signo) {
+    if (g_feat_csv) { fflush(g_feat_csv); fclose(g_feat_csv); g_feat_csv = NULL; }
+    close_ports();
+    rte_eal_cleanup();
+    _exit(0);
+}
 
  /* Initialization of Environment Abstraction Layer (EAL). 8< */
  int main(int argc, char **argv)
@@ -815,20 +805,21 @@ static struct worker_args worker_args[MAX_CORES];
      if (ret < 0)
          rte_panic("Cannot init EAL\n");
 
-    const char *csv_path = getenv("FLOW_CSV");
-    if (!csv_path) csv_path = "flow_features.csv";
 
-    g_feat_csv = fopen(csv_path, "w");
+    // here we atart the file for featres
+    g_feat_csv = fopen("flow_features.csv", "w");
     if (!g_feat_csv)
-        rte_exit(EXIT_FAILURE, "Cannot open CSV output: %s\n", csv_path);
+        rte_exit(EXIT_FAILURE, "Cannot open flow_features.csv\n");
 
-    // line-buffered so rows flush even if the process is killed
+    /* Optional: line-buffer so rows appear promptly */
     setvbuf(g_feat_csv, NULL, _IOLBF, 0);
 
     fprintf(g_feat_csv,
-            "src_ip,src_port,dst_ip,dst_port,proto,"
-        "len_min,len_max,mean_len,iat_min_us,iat_max_us,mean_iat_us,total_len,flag_bits_sum\n");
+            "src_ip_u32,src_port,dst_ip_u32,dst_port,proto,"
+            "len_min,len_max,mean_len,iat_min_us,iat_max_us,mean_iat_us,total_len,flag_bits_sum\n");
 
+    signal(SIGINT,  on_terminate);
+    signal(SIGTERM, on_terminate);
     /*
     latency_cycles = malloc(sizeof(*latency_cycles) * MAX_SAMPLES);
     if (!latency_cycles)
@@ -843,7 +834,7 @@ static struct worker_args worker_args[MAX_CORES];
 
 
 
-     uint64_t tsc_hz = rte_get_tsc_hz();
+    uint64_t tsc_hz = rte_get_tsc_hz();
     printf("TSC frequency: %lu Hz (%.2f GHz)\n",
            tsc_hz, tsc_hz / 1e9);
 
@@ -859,13 +850,14 @@ static struct worker_args worker_args[MAX_CORES];
     .hash_func_init_val= 0,
     .socket_id         = rte_socket_id(),
     };
+
     for (unsigned core = 0; core < total_lcores; core++) {
-    char name[32];
-    snprintf(name, sizeof(name), "ftbl_%u", core);
-    p.name = name;
-    flow_tables[core] = rte_hash_create(&p);
-    if (!flow_tables[core])
-        rte_exit(EXIT_FAILURE, "Cannot create hash for core %u\n", core);
+        char name[32];
+        snprintf(name, sizeof(name), "ftbl_%u", core);
+        p.name = name;
+        flow_tables[core] = rte_hash_create(&p);
+        if (!flow_tables[core])
+            rte_exit(EXIT_FAILURE, "Cannot create hash for core %u\n", core);
     }
 
      argc -= ret;
