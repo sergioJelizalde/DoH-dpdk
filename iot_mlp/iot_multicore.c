@@ -52,6 +52,9 @@
  
  //for bluefield2
  #include <arm_neon.h>
+ #include <arpa/inet.h>   // inet_ntop
+ #include <netinet/in.h>  // struct in_addr
+
 
 //#include "mlp_8.h"
 //#include "mlp_32.h"
