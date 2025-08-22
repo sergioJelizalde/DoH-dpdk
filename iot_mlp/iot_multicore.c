@@ -86,7 +86,7 @@
 
 static FILE *g_feat_csv = NULL;
 
-#define N_PACKETS 8
+#define N_PACKETS 6
 #define INVALID_INDEX   UINT32_MAX
 
 #define MAX_FLOWS_PER_CORE 8192*2
@@ -303,7 +303,15 @@ static inline void log_features_csv(const struct flow_key *key, const float f[8]
             (double)f[4], (double)f[5], (double)f[6], (double)f[7]);
 }
 
-
+static inline void canonicalize_5tuple(struct flow_key *k)
+{
+    /* Lexicographic order on (IP,port). Keep protocol as-is. */
+    if (k->src_ip > k->dst_ip ||
+       (k->src_ip == k->dst_ip && k->src_port > k->dst_port)) {
+        uint32_t ip  = k->src_ip;   k->src_ip   = k->dst_ip;   k->dst_ip   = ip;
+        uint16_t prt = k->src_port; k->src_port = k->dst_port; k->dst_port = prt;
+    }
+}
 
 // Fast piecewise sigmoid approximation
 static inline float fast_sigmoid(float x) {
@@ -454,6 +462,8 @@ void update_flow_entry(struct flow_entry *e,
                        uint64_t    now_cycles,
                        uint8_t     tcp_flags_count)
 {
+    if (e->pkt_count >= N_PACKETS) return;
+
     uint64_t iat = (e->pkt_count > 0)
                    ? (now_cycles - e->last_timestamp)
                    : 0;
@@ -530,7 +540,7 @@ handle_packet(struct flow_key   *key,
     update_flow_entry(e, pkt_len, now, flags_count);
 
     // once N_PACKETS seen, build features & (optionally) predict
-    if (e->pkt_count == N_PACKETS-1) {
+    if (e->pkt_count == N_PACKETS) {
         double hz = (double)rte_get_tsc_hz();
 
         float mean_len = (float)(e->len_sum   / (double)e->pkt_count);
@@ -670,7 +680,7 @@ static struct worker_args worker_args[MAX_CORES];
                         key.src_port = dst_port;
                         key.dst_port = src_port;
                         key.protocol = IPv4NextProtocol;
-
+                        canonicalize_5tuple(&key);
                         uint16_t pkt_len = pIP4Hdr->total_length;
                         uint64_t pkt_time = is_timestamp_enabled(bufs[i]) ? get_hw_timestamp(bufs[i]) : 0; 
                         
