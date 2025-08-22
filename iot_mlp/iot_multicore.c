@@ -132,6 +132,8 @@ struct flow_entry {
 
     /* sum of '1' bits in the TCP flags field */
     uint32_t flag_bits_sum;
+
+    uint8_t finalized;
 };
 
 /* Statically allocate pools for every possible lcore */
@@ -448,6 +450,7 @@ reset_entry_per_core(struct worker_args *w, uint32_t idx)
     // Set initial “min” values so first packet always replaces them
     e->len_min = UINT32_MAX;
     e->iat_min = UINT64_MAX;
+    e->finalized = 0;
 }
 
 
@@ -462,7 +465,7 @@ void update_flow_entry(struct flow_entry *e,
                        uint64_t    now_cycles,
                        uint8_t     tcp_flags_count)
 {
-    if (e->pkt_count >= N_PACKETS) return;
+    if (e->finalized || e->pkt_count >= N_PACKETS) return;
 
     uint64_t iat = (e->pkt_count > 0)
                    ? (now_cycles - e->last_timestamp)
@@ -540,7 +543,7 @@ handle_packet(struct flow_key   *key,
     update_flow_entry(e, pkt_len, now, flags_count);
 
     // once N_PACKETS seen, build features & (optionally) predict
-    if (e->pkt_count == N_PACKETS) {
+    if (!e->finalized && e->pkt_count == N_PACKETS) {
         double hz = (double)rte_get_tsc_hz();
 
         float mean_len = (float)(e->len_sum   / (double)e->pkt_count);
@@ -560,6 +563,7 @@ handle_packet(struct flow_key   *key,
 
         int pred = predict_mlp(features, w->buf_a, w->buf_b);
         log_features_csv(key, features);
+        e->finalized = 1;  // prevent repeats
         //int pred = predict_mlp_c_general(features, w->buf_a, w->buf_b);
         // print flow
         // Print flow ID + classification
