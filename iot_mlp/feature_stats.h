@@ -1,0 +1,16 @@
+// Auto-generated feature stats for z-score normalization
+
+#pragma once
+
+#define ALIGN16 __attribute__((aligned(16)))
+#define NUM_FEATURES 8
+
+static const float FEATURE_MEAN[NUM_FEATURES] ALIGN16 = {
+    12875.732422f, 36726.437500f, 20472.765625f, 6.682754f, 50400937902080.000000f, 28116.781250f, 122836.593750f, 8.628415f
+};
+
+static const float FEATURE_STD[NUM_FEATURES] ALIGN16 = {
+    7008.486816f, 20041.541016f, 8717.947266f, 7.207061f, 2155487319556096.000000f, 223971.515625f, 52307.679688f, 1.218106f
+};
+
+#undef ALIGN16
