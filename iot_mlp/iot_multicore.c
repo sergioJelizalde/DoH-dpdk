@@ -410,31 +410,27 @@ static void layer_forward_neon(const float *W, const float *B,
 
 // NEON MLP over arbitrary layers
 static int predict_mlp(const float *in_features, float *buf_a, float *buf_b) {
-
-    float *in_buf  = buf_a, *out_buf = buf_b;
+    float *in_buf = buf_a, *out_buf = buf_b;
     memcpy(in_buf, in_features, LAYER_SIZES[0] * sizeof(float));
-    //printf("entering prediction");
+
     for (int L = 0; L < NUM_LAYERS; L++) {
-        layer_forward_neon(
-          WEIGHTS[L], BIASES[L],
-          in_buf, out_buf,
-          LAYER_SIZES[L],
-          LAYER_SIZES[L+1],
-          (L == NUM_LAYERS - 1)
-        );
+        layer_forward_neon(WEIGHTS[L], BIASES[L],
+                           in_buf, out_buf,
+                           LAYER_SIZES[L],
+                           LAYER_SIZES[L+1],
+                           (L == NUM_LAYERS - 1));
         float *tmp = in_buf; in_buf = out_buf; out_buf = tmp;
     }
-    //printf("inference");
-    // argmax
-    int final_size = LAYER_SIZES[NUM_LAYERS], best = 0;
-    float best_v = in_buf[0];
-    for (int i = 1; i < final_size; i++) {
-        if (in_buf[i] > best_v) {
-            best_v = in_buf[i];
-            best   = i;
-        }
+
+    int final_size = LAYER_SIZES[NUM_LAYERS];
+    if (final_size == 1) {
+        // after layer_forward_neon, output already passed through sigmoid
+        return (in_buf[0] >= 0.5f) ? 1 : 0;
+    } else {
+        int best = 0; float best_v = in_buf[0];
+        for (int i = 1; i < final_size; i++) if (in_buf[i] > best_v) { best_v = in_buf[i]; best = i; }
+        return best;
     }
-    return best;
 }
 //--------------------------------------------------------------------------
 
