@@ -576,8 +576,7 @@ handle_packet(struct flow_key   *key,
         ALIGN16 float features_scaled[NUM_FEATURES];
         normalize_features(features, features_scaled, NUM_FEATURES);
         int pred = predict_mlp(features_scaled, w->buf_a, w->buf_b);
-
-        int pred = predict_mlp(features, w->buf_a, w->buf_b);
+        
         log_features_csv(key, features);
         e->finalized = 1;  // prevent repeats
         //int pred = predict_mlp_c_general(features, w->buf_a, w->buf_b);
