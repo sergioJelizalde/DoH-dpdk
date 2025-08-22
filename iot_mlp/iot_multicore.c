@@ -94,7 +94,7 @@ static FILE *g_feat_csv = NULL;
 #define N_PACKETS 6
 #define INVALID_INDEX   UINT32_MAX
 
-#define MAX_FLOWS_PER_CORE 100000
+#define MAX_FLOWS_PER_CORE 500000
 #define MAX_CORES       RTE_MAX_LCORE
 
 struct worker_args {
