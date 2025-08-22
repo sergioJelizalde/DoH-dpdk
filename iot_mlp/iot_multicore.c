@@ -63,6 +63,7 @@
 //for demo
 #include "mlp_weights.h"
 #include "feature_stats.h"
+static unsigned g_total_lcores = 0;
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -105,6 +106,9 @@ struct worker_args {
     uint16_t            queue_id;    
     uint32_t            next_free;
     uint16_t port_id;
+
+    uint64_t            pred0;
+    uint64_t            pred1;
 };
 
 struct flow_key {
@@ -572,7 +576,8 @@ handle_packet(struct flow_key   *key,
         ALIGN16 float features_scaled[NUM_FEATURES];
         normalize_features(features, features_scaled, NUM_FEATURES);
         int pred = predict_mlp(features_scaled, w->buf_a, w->buf_b);
-        
+        if (pred == 0) w->pred0++;
+        else           w->pred1++;
         log_features_csv(key, features);
         e->finalized = 1;  // prevent repeats
         //int pred = predict_mlp_c_general(features, w->buf_a, w->buf_b);
@@ -810,6 +815,22 @@ static struct worker_args worker_args[MAX_CORES];
 
 static void on_terminate(int signo) {
     if (g_feat_csv) { fflush(g_feat_csv); fclose(g_feat_csv); g_feat_csv = NULL; }
+
+    // Aggregate prediction stats across cores
+    uint64_t sum0 = 0, sum1 = 0;
+    for (unsigned core = 0; core < g_total_lcores; core++) {
+        sum0 += worker_args[core].pred0;
+        sum1 += worker_args[core].pred1;
+    }
+    uint64_t total = sum0 + sum1;
+    double pct0 = total ? (100.0 * (double)sum0 / (double)total) : 0.0;
+    double pct1 = total ? (100.0 * (double)sum1 / (double)total) : 0.0;
+
+    printf("\n=== Prediction summary ===\n");
+    printf("class 0: %" PRIu64 " (%.2f%%)\n", sum0, pct0);
+    printf("class 1: %" PRIu64 " (%.2f%%)\n", sum1, pct1);
+    printf("total  : %" PRIu64 "\n", total);
+
     close_ports();
     rte_eal_cleanup();
     _exit(0);
@@ -866,7 +887,7 @@ static void on_terminate(int signo) {
     printf("DPDK version: %s\n", rte_version());
 
     unsigned total_lcores = rte_lcore_count();
-
+    g_total_lcores = total_lcores;   
     
     struct rte_hash_parameters p = {
     .entries           = MAX_FLOWS_PER_CORE,
@@ -931,7 +952,8 @@ static void on_terminate(int signo) {
         // 2) Per-core state
         w->next_free  = 0;            // start allocating at slot 0
         w->queue_id   = queue_id++;   // one RX queue per core
-
+        w->pred0      = 0;   // NEW
+        w->pred1      = 0;   // NEW
         // 3) Scratch buffers for NEON inference
         if (posix_memalign((void**)&w->buf_a, 16, max_neurons * sizeof(float)) ||
             posix_memalign((void**)&w->buf_b, 16, max_neurons * sizeof(float))) {
