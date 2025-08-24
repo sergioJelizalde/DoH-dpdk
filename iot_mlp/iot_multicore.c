@@ -92,6 +92,7 @@ static unsigned g_total_lcores = 0;
 static FILE *g_feat_csv = NULL;
 
 #define N_PACKETS 6
+#define NUM_FEATURES 8
 #define INVALID_INDEX   UINT32_MAX
 
 #define MAX_FLOWS_PER_CORE 500000
