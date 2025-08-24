@@ -702,8 +702,8 @@ static struct worker_args worker_args[MAX_CORES];
                         key.protocol = IPv4NextProtocol;
                         canonicalize_5tuple(&key);
                         uint16_t pkt_len = pIP4Hdr->total_length;
-                        uint64_t pkt_time = is_timestamp_enabled(bufs[i]) ? get_hw_timestamp(bufs[i]) : 0; 
-                        
+                        //uint64_t pkt_time = is_timestamp_enabled(bufs[i]) ? get_hw_timestamp(bufs[i]) : 0; 
+                        uint64_t pkt_time = rte_rdtsc_precise();
                         //printf("Pkt time: %" PRIu64 " cycles\n", pkt_time);
                         // printf("TSC frequency: %lu Hz\n", hz);
                         
