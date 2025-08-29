@@ -242,8 +242,8 @@ int main(int argc, char **argv) {
     }
 
     /* Message to hash */
-    const char msg[] =
-        "Sergio"
+    const char msg[] = "Sergio";
+
     size_t len = strlen(msg);
 
     printf("strlen(msg): %zu\n", len);
