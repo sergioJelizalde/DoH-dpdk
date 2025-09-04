@@ -708,7 +708,7 @@ void handle_packet(struct flow_key *key, uint16_t pkt_len, uint64_t now, RandomF
                                     // uint64_t end_cycles = rte_rdtsc_precise();
                                     // uint64_t inference_cycles = end_cycles - start_cycles;
 
-                                    // // Convert to nanoseconds
+                                    // // Convert to nanosecond
                                     // double latency_ns = ((double)inference_cycles / hz) * 1e9;
 
                                     // printf("Latency: %.2f ns (%lu cycles)\n", latency_ns, inference_cycles);                                       
