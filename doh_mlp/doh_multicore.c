@@ -142,6 +142,8 @@ struct flow_entry {
     uint64_t bytes_fwd;  // from initiator to responder
     uint64_t bytes_rev;  // reverse direction
 
+    uint32_t initiator_ip;
+    uint16_t initiator_port;
 
     /* sum of '1' bits in the TCP flags field */
     uint32_t flag_bits_sum;
@@ -539,35 +541,38 @@ handle_packet(struct flow_key   *key,
               uint16_t           pkt_len,
               uint64_t           now,
               uint8_t            flags_count,
-              struct worker_args *w)
+              struct worker_args *w,
+                uint32_t orig_src_ip,
+              uint16_t orig_src_port)
 {
     void    *data_ptr = NULL;
     int      ret      = rte_hash_lookup_data(w->flow_table, key, &data_ptr);
     uint32_t index;
 
     if (ret < 0) {
-        // not found: grab a new slot
-        index = allocate_entry_per_core(w);
-        if (index == INVALID_INDEX)
-            return;  // table full
+    // not found: new flow
+    index = allocate_entry_per_core(w);
+    if (index == INVALID_INDEX) return;
 
-        ret = rte_hash_add_key_data(w->flow_table,
-                                    key,
-                                    (void*)(uintptr_t)index);
-        if (ret < 0) {
-            // failed to insert: rewind allocator
-            w->next_free--;
-            return;
-        }
+    ret = rte_hash_add_key_data(w->flow_table, key, (void*)(uintptr_t)index);
+    if (ret < 0) { w->next_free--; return; }
+
+    struct flow_entry *new_e = &w->flow_pool[index];
+    reset_entry_per_core(w, index);
+
+    // record initiator IP/port
+    new_e->initiator_ip   = orig_src_ip;
+    new_e->initiator_port = orig_src_port;
+
     } else {
-        // found: unwrap the stored index
+        // found existing flow
         index = (uint32_t)(uintptr_t)data_ptr;
     }
 
     struct flow_entry *e = &w->flow_pool[index];
 
     // update per‐flow stats
-    bool is_fwd = (key->src_ip == orig_src && key->src_port == orig_sport);
+    bool is_fwd = (pkt_src_ip == e->initiator_ip &&  pkt_src_port == e->initiator_port);
     update_flow_entry(e, pkt_len, now, flags_count, is_fwd);
    
 
@@ -718,8 +723,13 @@ static struct worker_args worker_args[MAX_CORES];
                         key.src_port = dst_port;
                         key.dst_port = src_port;
                         key.protocol = IPv4NextProtocol;
+
+                        uint32_t orig_src_ip   = pkt_src_ip;
+                        uint16_t orig_src_port = pkt_src_port;
+
                         canonicalize_5tuple(&key);
                         uint16_t pkt_len = pIP4Hdr->total_length;
+                        printf("Pkt length: %" PRIu16 " bytes\n", pkt_len);
                         //uint64_t pkt_time = is_timestamp_enabled(bufs[i]) ? get_hw_timestamp(bufs[i]) : 0; 
                         uint64_t pkt_time = rte_rdtsc_precise();
                         //printf("Pkt time: %" PRIu64 " cycles\n", pkt_time);
@@ -728,7 +738,7 @@ static struct worker_args worker_args[MAX_CORES];
                         // int prediction = predict_mlp(features);
                         // uint64_t start_cycles = rte_rdtsc_precise();
 
-                        handle_packet(&key, pkt_len, pkt_time, flags_count, w);
+                        handle_packet(&key, pkt_len, pkt_time, flags_count, w, orig_src_ip, orig_src_port);
                         // uint64_t end_cycles = rte_rdtsc_precise();
                         // uint64_t inference_cycles = end_cycles - start_cycles;
 
