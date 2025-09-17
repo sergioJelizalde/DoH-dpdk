@@ -480,7 +480,8 @@ count_bits(uint8_t x) {
 void update_flow_entry(struct flow_entry *e,
                        uint16_t    pkt_len,
                        uint64_t    now_cycles,
-                       uint8_t     tcp_flags_count)
+                       uint8_t     tcp_flags_count
+                       , bool is_fwd)
 {
     if (e->finalized || e->pkt_count >= N_PACKETS) return;
 
@@ -489,13 +490,13 @@ void update_flow_entry(struct flow_entry *e,
                    : 0;
 
     if (e->pkt_count == 0) {
-        e->len_min   = UINT64_MAX;
-        e->len_max   = 0;
-        e->len_sum   = 0;
+        e->len_min   = pkt_len;
+        e->len_max   = pkt_len;
+        e->len_sum   = pkt_len;
 
-        e->iat_min   = UINT64_MAX;
-        e->iat_max   = 0;
-        e->iat_sum   = 0;
+        e->iat_min   = pkt_len;
+        e->iat_max   = pkt_len;
+        e->iat_sum   = pkt_len;
 
         e->first_timestamp = now_cycles;
         e->total_len       = pkt_len;
