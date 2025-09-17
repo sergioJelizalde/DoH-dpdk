@@ -542,8 +542,10 @@ handle_packet(struct flow_key   *key,
               uint64_t           now,
               uint8_t            flags_count,
               struct worker_args *w,
-                uint32_t orig_src_ip,
-              uint16_t orig_src_port)
+              uint32_t orig_src_ip,
+              uint16_t orig_src_port,
+              uint32_t pkt_src_ip,
+              uint16_t pkt_src_port)
 {
     void    *data_ptr = NULL;
     int      ret      = rte_hash_lookup_data(w->flow_table, key, &data_ptr);
@@ -724,8 +726,8 @@ static struct worker_args worker_args[MAX_CORES];
                         key.dst_port = src_port;
                         key.protocol = IPv4NextProtocol;
 
-                        uint32_t orig_src_ip   = pkt_src_ip;
-                        uint16_t orig_src_port = pkt_src_port;
+                        uint32_t orig_src_ip   = src_ip;
+                        uint16_t orig_src_port = src_port;
 
                         canonicalize_5tuple(&key);
                         uint16_t pkt_len = pIP4Hdr->total_length;
@@ -738,7 +740,7 @@ static struct worker_args worker_args[MAX_CORES];
                         // int prediction = predict_mlp(features);
                         // uint64_t start_cycles = rte_rdtsc_precise();
 
-                        handle_packet(&key, pkt_len, pkt_time, flags_count, w, orig_src_ip, orig_src_port);
+                        handle_packet(&key, pkt_len, pkt_time, flags_count, w, orig_src_ip, orig_src_port, src_ip, src_port);
                         // uint64_t end_cycles = rte_rdtsc_precise();
                         // uint64_t inference_cycles = end_cycles - start_cycles;
 
