@@ -568,7 +568,7 @@ handle_packet(struct flow_key   *key,
 
     // update per‐flow stats
     bool is_fwd = (key->src_ip == orig_src && key->src_port == orig_sport);
-    update_flow_entry(e, pkt_len, pkt_time, flags_count, is_fwd);
+    update_flow_entry(e, pkt_len, now, flags_count, is_fwd);
    
 
     // once N_PACKETS seen, build features & (optionally) predict
