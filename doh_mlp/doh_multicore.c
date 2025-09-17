@@ -139,6 +139,10 @@ struct flow_entry {
     /* total bytes in flow (you already had: total_len) */
     uint64_t total_len;
 
+    uint64_t bytes_fwd;  // from initiator to responder
+    uint64_t bytes_rev;  // reverse direction
+
+
     /* sum of '1' bits in the TCP flags field */
     uint32_t flag_bits_sum;
 
@@ -485,9 +489,9 @@ void update_flow_entry(struct flow_entry *e,
                    : 0;
 
     if (e->pkt_count == 0) {
-        e->len_min   = pkt_len;
-        e->len_max   = pkt_len;
-        e->len_sum   = pkt_len;
+        e->len_min   = UINT64_MAX;
+        e->len_max   = 0;
+        e->len_sum   = 0;
 
         e->iat_min   = UINT64_MAX;
         e->iat_max   = 0;
@@ -497,6 +501,10 @@ void update_flow_entry(struct flow_entry *e,
         e->total_len       = pkt_len;
 
         e->flag_bits_sum   = tcp_flags_count;
+
+        e->bytes_fwd = 0;
+        e->bytes_rev = 0;
+
     } else {
         /* length stats */
         if (pkt_len < e->len_min) e->len_min = pkt_len;
@@ -513,6 +521,11 @@ void update_flow_entry(struct flow_entry *e,
 
         /* flag bits sum */
         e->flag_bits_sum += tcp_flags_count;
+
+        // Directional byte counts
+        if (is_fwd) e->bytes_fwd += pkt_len;
+        else        e->bytes_rev += pkt_len;
+
     }
 
     e->last_timestamp = now_cycles;
@@ -553,25 +566,28 @@ handle_packet(struct flow_key   *key,
     struct flow_entry *e = &w->flow_pool[index];
 
     // update per‐flow stats
-    update_flow_entry(e, pkt_len, now, flags_count);
+    bool is_fwd = (key->src_ip == orig_src && key->src_port == orig_sport);
+    update_flow_entry(e, pkt_len, pkt_time, flags_count, is_fwd);
+   
 
     // once N_PACKETS seen, build features & (optionally) predict
     if (!e->finalized && e->pkt_count == N_PACKETS) {
-        double hz = (double)rte_get_tsc_hz();
+        double hz = (double) rte_get_tsc_hz();
 
-        float mean_len = (float)(e->len_sum   / (double)e->pkt_count);
-        float mean_iat = (float)(e->iat_sum   / (double)(e->pkt_count - 1))
-                         * 1e6f / hz;
+        float duration_us = (float)((e->last_timestamp - e->first_timestamp) * 1e6 / hz);
+        float pkt_size_mean = (float)(e->len_sum / (double)e->pkt_count);
+
+        float iat_mean = (float)(e->iat_sum / (double)(e->pkt_count - 1)) * 1e6f / hz;
 
         ALIGN16 float features[8] = {
-            (float)e->len_min,
+            duration_us,
+            (float)e->bytes_fwd,
+            (float)e->bytes_rev,
+            pkt_size_mean,
             (float)e->len_max,
-            mean_len,
+            iat_mean,
             (float)(e->iat_min / hz * 1e6),
-            (float)(e->iat_max / hz * 1e6),
-            mean_iat,
-            (float)e->total_len,
-            (float)e->flag_bits_sum
+            (float)(e->iat_max / hz * 1e6)
         };
 
         ALIGN16 float features_scaled[NUM_FEATURES];
@@ -862,8 +878,9 @@ static void on_terminate(int signo) {
     setvbuf(g_feat_csv, NULL, _IOLBF, 0);
 
     fprintf(g_feat_csv,
-            "src_ip_u32,src_port,dst_ip_u32,dst_port,proto,"
-            "len_min,len_max,mean_len,iat_min_us,iat_max_us,mean_iat_us,total_len,flag_bits_sum\n");
+    "src_ip_u32,src_port,dst_ip_u32,dst_port,proto,"
+    "duration_us,bytes_fwd,bytes_rev,pkt_size_mean,"
+    "pkt_size_max,iat_mean_us,iat_min_us,iat_max_us\n");
 
     signal(SIGINT,  on_terminate);
     signal(SIGTERM, on_terminate);
