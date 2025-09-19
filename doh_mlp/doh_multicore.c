@@ -731,7 +731,7 @@ static struct worker_args worker_args[MAX_CORES];
 
                         canonicalize_5tuple(&key);
                         uint16_t pkt_len = rte_be_to_cpu_16(pIP4Hdr->total_length);
-                        printf("Pkt length: %" PRIu16 " bytes\n", pkt_len);
+                        //printf("Pkt length: %" PRIu16 " bytes\n", pkt_len);
                         //uint64_t pkt_time = is_timestamp_enabled(bufs[i]) ? get_hw_timestamp(bufs[i]) : 0; 
                         uint64_t pkt_time = rte_rdtsc_precise();
                         //printf("Pkt time: %" PRIu64 " cycles\n", pkt_time);
