@@ -569,7 +569,6 @@ handle_packet(struct flow_key   *key,
     } else {
         // found existing flow
         index = (uint32_t)(uintptr_t)data_ptr;
-        
     }
 
     struct flow_entry *e = &w->flow_pool[index];
