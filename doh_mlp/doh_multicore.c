@@ -91,7 +91,7 @@ static unsigned g_total_lcores = 0;
 
 static FILE *g_feat_csv = NULL;
 
-#define N_PACKETS 6
+#define N_PACKETS 16
 #define NUM_FEATURES 16
 #define INVALID_INDEX   UINT32_MAX
 
@@ -122,43 +122,24 @@ struct flow_key {
 
 struct flow_entry {
 
-    uint64_t first_timestamp;
-    uint64_t last_timestamp;
-    uint16_t pkt_count;
-
-    /* packet‐length stats */
-    uint32_t len_min;
-    uint32_t len_max;
-    uint64_t len_sum;      // for computing mean
-
-
     /* directional bytes and counts */
-    uint64_t bytes_fwd;      // client/initiator -> server
-    uint64_t bytes_rev;      // server -> client
-    uint32_t pkt_count_fwd;  // n_client
-    uint32_t pkt_count_rev;  // n_server
+    uint64_t bytes_client;      // client/initiator -> server
+    uint64_t bytes_server;      // server -> client
+    uint32_t pkt_count_client;  // n_client
+    uint32_t pkt_count_server;  // n_server
 
     /* per-direction size stats */
-    uint32_t pkt_len_min_fwd;
-    uint32_t pkt_len_max_fwd;
-    uint64_t pkt_len_sum_fwd;
+    uint32_t pkt_len_min_client;
+    uint32_t pkt_len_max_client;
+    uint64_t pkt_len_sum_client;
 
-    uint32_t pkt_len_min_rev;
-    uint32_t pkt_len_max_rev;
-    uint64_t pkt_len_sum_rev;
+    uint32_t pkt_len_min_server;
+    uint32_t pkt_len_max_server;
+    uint64_t pkt_len_sum_server;
 
     /* direction switch counter */
     uint8_t last_direction;  // 0 = unknown, 1 = fwd (client), 2 = rev (server)
     uint16_t dir_switches;
-
-    /* track first timestamps per direction for time-first-response (optional) */
-    uint64_t first_ts_fwd;
-    uint64_t first_ts_rev;
-
-    /* other fields you already have */
-    uint32_t initiator_ip;
-    uint16_t initiator_port;
-    uint32_t flag_bits_sum;
     uint8_t finalized;
 };
 
@@ -402,7 +383,7 @@ static void layer_forward_neon(const float *W, const float *B,
         if (!is_output)  acc = vmaxq_f32(acc, vdupq_n_f32(0.0f));
         vst1q_f32(&out[j], acc);
     }
-    
+
     /*
     // tail scalar
     for (; j < size_out; j++) {
@@ -493,33 +474,28 @@ reset_entry_per_core(struct worker_args *w, uint32_t idx)
 {
     struct flow_entry *e = &w->flow_pool[idx];
 
-    // Clear everything
+    // Zero everything we track
     memset(e, 0, sizeof(*e));
 
-    // Set initial “min” values so first packet always replaces them
-    e->len_min = UINT32_MAX;
-    e->pkt_len_min_fwd = UINT32_MAX;
-    e->pkt_len_min_rev = UINT32_MAX;
-    e->pkt_len_max_fwd = 0;
-    e->pkt_len_max_rev = 0;
+    // Initialize per-side mins/maxes so first packet replaces them
+    e->pkt_len_min_client = UINT32_MAX;
+    e->pkt_len_min_server = UINT32_MAX;
+    e->pkt_len_max_client = 0;
+    e->pkt_len_max_server = 0;
 
-    e->pkt_len_sum_fwd = 0;
-    e->pkt_len_sum_rev = 0;
+    e->pkt_len_sum_client = 0;
+    e->pkt_len_sum_server = 0;
 
-    e->bytes_fwd = 0;
-    e->bytes_rev = 0;
-    e->pkt_count_fwd = 0;
-    e->pkt_count_rev = 0;
+    e->bytes_client = 0;
+    e->bytes_server = 0;
+    e->pkt_count_client = 0;
+    e->pkt_count_server = 0;
 
     e->last_direction = 0;
     e->dir_switches = 0;
 
-    e->total_len = 0;
-    e->flag_bits_sum = 0;
-
     e->finalized = 0;
 }
-
 
 static inline uint8_t
 count_bits(uint8_t x) {
@@ -527,153 +503,76 @@ count_bits(uint8_t x) {
     return __builtin_popcount(x);
 }
 
-void update_flow_entry(struct flow_entry *e,
-                       uint16_t    pkt_len,
-                       uint64_t    now_cycles,
-                       uint8_t     tcp_flags_count,
-                       bool is_fwd)
+static inline void
+update_flow_entry(struct flow_entry *e,
+                  uint16_t           pkt_len,
+                  bool               is_client)
 {
-    if (e->finalized || e->pkt_count >= N_PACKETS) return;
+    // Total packets already seen for this flow (client + server)
+    uint32_t total_pkts = e->pkt_count_client + e->pkt_count_server;
 
-    uint64_t iat = 0;
-    if (e->pkt_count > 0) {
-        /* overall inter-arrival time in cycles */
-        iat = (now_cycles > e->last_timestamp) ? (now_cycles - e->last_timestamp) : 0;
-    }
+    // Stop updating if flow already finalized or we've seen enough packets
+    if (e->finalized || total_pkts >= N_PACKETS) return;
 
-    if (e->pkt_count == 0) {
-        /* First packet in flow */
-        e->len_min   = pkt_len;
-        e->len_max   = pkt_len;
-        e->len_sum   = pkt_len;
-
-        /* IATs default: we set min to UINT64_MAX sentinel and sum=0 */
-        e->iat_min   = UINT64_MAX;
-        e->iat_max   = 0;
-        e->iat_sum   = 0;
-
-        e->first_timestamp = now_cycles;
-        e->total_len       = pkt_len;
-
-        e->flag_bits_sum   = tcp_flags_count;
-
-        /* directional accounting for the first packet */
-        if (is_fwd) {
-            e->bytes_fwd = pkt_len;
-            e->pkt_count_fwd = 1;
-            e->pkt_len_sum_fwd = pkt_len;
-            e->pkt_len_min_fwd = pkt_len;
-            e->pkt_len_max_fwd = pkt_len;
-            e->first_ts_fwd = now_cycles;
-            e->last_ts_fwd = now_cycles;
+    if (is_client) {
+        /* Client-side update */
+        if (e->pkt_count_client == 0) {
+            e->pkt_len_min_client = pkt_len;
+            e->pkt_len_max_client = pkt_len;
+            e->pkt_len_sum_client = pkt_len;
         } else {
-            e->bytes_rev = pkt_len;
-            e->pkt_count_rev = 1;
-            e->pkt_len_sum_rev = pkt_len;
-            e->pkt_len_min_rev = pkt_len;
-            e->pkt_len_max_rev = pkt_len;
-            e->first_ts_rev = now_cycles;
-            e->last_ts_rev = now_cycles;
+            if ((uint32_t)pkt_len < e->pkt_len_min_client) e->pkt_len_min_client = pkt_len;
+            if ((uint32_t)pkt_len > e->pkt_len_max_client) e->pkt_len_max_client = pkt_len;
+            e->pkt_len_sum_client += pkt_len;
         }
-
+        e->bytes_client += pkt_len;
+        e->pkt_count_client++;
     } else {
-        /* length stats (global) */
-        if ((uint32_t)pkt_len < e->len_min) e->len_min = pkt_len;
-        if ((uint32_t)pkt_len > e->len_max) e->len_max = pkt_len;
-        e->len_sum += pkt_len;
-
-        /* IAT stats (overall) */
-        if (e->pkt_count > 0) {
-            if (iat < e->iat_min) e->iat_min = iat;
-            if (iat > e->iat_max) e->iat_max = iat;
-            e->iat_sum += iat;
-        }
-
-        /* total bytes */
-        e->total_len += pkt_len;
-
-        /* flag bits sum */
-        e->flag_bits_sum += tcp_flags_count;
-
-        /* Directional byte counts and per-direction size stats */
-        if (is_fwd) {
-            e->bytes_fwd += pkt_len;
-            e->pkt_count_fwd++;
-            e->pkt_len_sum_fwd += pkt_len;
-            if ((uint32_t)pkt_len < e->pkt_len_min_fwd) e->pkt_len_min_fwd = pkt_len;
-            if ((uint32_t)pkt_len > e->pkt_len_max_fwd) e->pkt_len_max_fwd = pkt_len;
-
-            /* timestamps for fwd */
-            if (e->first_ts_fwd == 0) e->first_ts_fwd = now_cycles;
-            /* compute per-direction last and optionally per-direction iat */
-            if (e->last_ts_fwd != 0) {
-                uint64_t iat_fwd = (now_cycles > e->last_ts_fwd) ? (now_cycles - e->last_ts_fwd) : 0;
-                if (iat_fwd < e->iat_min) e->iat_min = iat_fwd;
-                if (iat_fwd > e->iat_max) e->iat_max = iat_fwd;
-                e->iat_sum += iat_fwd;
-            }
-            e->last_ts_fwd = now_cycles;
+        /* Server-side update */
+        if (e->pkt_count_server == 0) {
+            e->pkt_len_min_server = pkt_len;
+            e->pkt_len_max_server = pkt_len;
+            e->pkt_len_sum_server = pkt_len;
         } else {
-            e->bytes_rev += pkt_len;
-            e->pkt_count_rev++;
-            e->pkt_len_sum_rev += pkt_len;
-            if ((uint32_t)pkt_len < e->pkt_len_min_rev) e->pkt_len_min_rev = pkt_len;
-            if ((uint32_t)pkt_len > e->pkt_len_max_rev) e->pkt_len_max_rev = pkt_len;
-
-            if (e->first_ts_rev == 0) e->first_ts_rev = now_cycles;
-            if (e->last_ts_rev != 0) {
-                uint64_t iat_rev = (now_cycles > e->last_ts_rev) ? (now_cycles - e->last_ts_rev) : 0;
-                if (iat_rev < e->iat_min) e->iat_min = iat_rev;
-                if (iat_rev > e->iat_max) e->iat_max = iat_rev;
-                e->iat_sum += iat_rev;
-            }
-            e->last_ts_rev = now_cycles;
+            if ((uint32_t)pkt_len < e->pkt_len_min_server) e->pkt_len_min_server = pkt_len;
+            if ((uint32_t)pkt_len > e->pkt_len_max_server) e->pkt_len_max_server = pkt_len;
+            e->pkt_len_sum_server += pkt_len;
         }
+        e->bytes_server += pkt_len;
+        e->pkt_count_server++;
     }
 
-    /* direction switch detection */
-    uint8_t cur_dir = is_fwd ? 1 : 2;
+    /* direction switch detection - last_direction: 0 unknown, 1 client, 2 server */
+    uint8_t cur_dir = is_client ? 1 : 2;
     if (e->last_direction != 0 && e->last_direction != cur_dir) {
         e->dir_switches++;
     }
     e->last_direction = cur_dir;
-
-    /* finalize overall fields */
-    e->last_timestamp = now_cycles;
-    e->pkt_count++;
 }
 
 
 static inline void
 handle_packet(struct flow_key   *key,
               uint16_t           pkt_len,
-              uint64_t           now,
-              uint8_t            flags_count,
               struct worker_args *w,
-              uint32_t orig_src_ip,
-              uint16_t orig_src_port,
-              uint32_t pkt_src_ip,
-              uint16_t pkt_src_port)
+              bool                is_client)
 {
     void    *data_ptr = NULL;
     int      ret      = rte_hash_lookup_data(w->flow_table, key, &data_ptr);
     uint32_t index;
 
     if (ret < 0) {
-    // not found: new flow
-    index = allocate_entry_per_core(w);
-    if (index == INVALID_INDEX) return;
+        // not found: new flow
+        index = allocate_entry_per_core(w);
+        if (index == INVALID_INDEX) return;
 
-    ret = rte_hash_add_key_data(w->flow_table, key, (void*)(uintptr_t)index);
-    if (ret < 0) { w->next_free--; return; }
+        ret = rte_hash_add_key_data(w->flow_table, key, (void*)(uintptr_t)index);
+        if (ret < 0) { w->next_free--; return; }
 
-    struct flow_entry *new_e = &w->flow_pool[index];
-    reset_entry_per_core(w, index);
+        struct flow_entry *new_e = &w->flow_pool[index];
+        reset_entry_per_core(w, index);
 
-    // record initiator IP/port
-    new_e->initiator_ip   = orig_src_ip;
-    new_e->initiator_port = orig_src_port;
-
+        index = index;
     } else {
         // found existing flow
         index = (uint32_t)(uintptr_t)data_ptr;
@@ -681,37 +580,53 @@ handle_packet(struct flow_key   *key,
 
     struct flow_entry *e = &w->flow_pool[index];
 
-    // update per‐flow stats
-    bool is_fwd = (pkt_src_ip == e->initiator_ip &&  pkt_src_port == e->initiator_port);
-    update_flow_entry(e, pkt_len, now, flags_count, is_fwd);
-   
+    /* Update per-flow stats using per-side client/server bookkeeping */
+    update_flow_entry(e, pkt_len, is_client);
 
-    // once N_PACKETS seen, build features & (optionally) predict
-    if (!e->finalized && e->pkt_count == N_PACKETS) {
-        double hz = (double) rte_get_tsc_hz();
+    /* compute totals after update */
+    uint32_t n_client = e->pkt_count_client;
+    uint32_t n_server = e->pkt_count_server;
+    uint32_t total_pkts = n_client + n_server;
 
-        /* convenience values */
-        uint32_t n_client = e->pkt_count_fwd;
-        uint32_t n_server = e->pkt_count_rev;
-        double client_bytes = (double)e->bytes_fwd;
-        double server_bytes = (double)e->bytes_rev;
+    /* only finalize / build features when we've seen exactly N_PACKETS packets */
+    if (!e->finalized && total_pkts == N_PACKETS) {
+
+        double client_bytes = (double)e->bytes_client;
+        double server_bytes = (double)e->bytes_server;
         double total_bytes = client_bytes + server_bytes;
-        double total_pkts = (double)(n_client + n_server);
 
-        /* global size stats */
-        float size_max = (e->len_max == 0 ? 0.0f : (float)e->len_max);
-        float size_min = (e->len_min == UINT32_MAX ? 0.0f : (float)e->len_min);
-        float size_mean = (e->pkt_count > 0) ? (float)(e->len_sum / (double)e->pkt_count) : 0.0f;
+        /* derive global size stats from per-side values */
+        uint32_t global_min = UINT32_MAX;
+        uint32_t global_max = 0;
+        uint64_t global_sum = 0;
 
-        /* client (fwd) stats */
-        float client_pkt_max  = (e->pkt_len_max_fwd == 0 ? 0.0f : (float)e->pkt_len_max_fwd);
-        float client_pkt_min  = (e->pkt_len_min_fwd == UINT32_MAX ? 0.0f : (float)e->pkt_len_min_fwd);
-        float client_pkt_mean = (e->pkt_count_fwd > 0) ? (float)(e->pkt_len_sum_fwd / (double)e->pkt_count_fwd) : 0.0f;
+        if (n_client > 0) {
+            if (e->pkt_len_min_client < global_min) global_min = e->pkt_len_min_client;
+            if (e->pkt_len_max_client > global_max) global_max = e->pkt_len_max_client;
+            global_sum += e->pkt_len_sum_client;
+        }
+        if (n_server > 0) {
+            if (e->pkt_len_min_server < global_min) global_min = e->pkt_len_min_server;
+            if (e->pkt_len_max_server > global_max) global_max = e->pkt_len_max_server;
+            global_sum += e->pkt_len_sum_server;
+        }
 
-        /* server (rev) stats */
-        float server_pkt_max  = (e->pkt_len_max_rev == 0 ? 0.0f : (float)e->pkt_len_max_rev);
-        float server_pkt_min  = (e->pkt_len_min_rev == UINT32_MAX ? 0.0f : (float)e->pkt_len_min_rev);
-        float server_pkt_mean = (e->pkt_count_rev > 0) ? (float)(e->pkt_len_sum_rev / (double)e->pkt_count_rev) : 0.0f;
+        /* normalize sentinels for empty sides */
+        float size_min = 0.0f;
+        if (global_min != UINT32_MAX) size_min = (float)global_min;
+        float size_max = (float)global_max;
+        float size_mean = 0.0f;
+        if (total_pkts > 0) size_mean = (float)((double)global_sum / (double)total_pkts);
+
+        /* client-side stats (guard empty side) */
+        float client_pkt_max  = (n_client > 0) ? (float)e->pkt_len_max_client : 0.0f;
+        float client_pkt_min  = (n_client > 0 && e->pkt_len_min_client != UINT32_MAX) ? (float)e->pkt_len_min_client : 0.0f;
+        float client_pkt_mean = (n_client > 0) ? (float)((double)e->pkt_len_sum_client / (double)n_client) : 0.0f;
+
+        /* server-side stats (guard empty side) */
+        float server_pkt_max  = (n_server > 0) ? (float)e->pkt_len_max_server : 0.0f;
+        float server_pkt_min  = (n_server > 0 && e->pkt_len_min_server != UINT32_MAX) ? (float)e->pkt_len_min_server : 0.0f;
+        float server_pkt_mean = (n_server > 0) ? (float)((double)e->pkt_len_sum_server / (double)n_server) : 0.0f;
 
         /* counts cast to float */
         float n_client_f = (float)n_client;
@@ -722,49 +637,63 @@ handle_packet(struct flow_key   *key,
         if (total_bytes > 0.0) bytes_fraction_client = (float)(client_bytes / total_bytes);
 
         float pkt_fraction_client = 0.0f;
-        if ((n_client + n_server) > 0) pkt_fraction_client = (float)((double)n_client / (double)(n_client + n_server));
+        if (total_pkts > 0) pkt_fraction_client = (float)((double)n_client / (double)total_pkts);
 
         /* dir_switches */
         float dir_switches_f = (float)e->dir_switches;
 
-        /* Build features in supplied order (16 features) */
+        /* Build features in the exact order you requested:
+           0: client_pkt_max
+           1: server_bytes
+           2: n_server
+           3: client_bytes
+           4: size_max
+           5: n_client
+           6: server_pkt_max
+           7: pkt_fraction_client
+           8: bytes_fraction_client
+           9: dir_switches
+           10: size_mean
+           11: client_pkt_mean
+           12: size_min
+           13: client_pkt_min
+           14: server_pkt_min
+           15: server_pkt_mean
+        */
         ALIGN16 float features16[16];
         features16[0]  = client_pkt_max;
-        features16[1]  = n_client_f;
-        features16[2]  = (float)server_bytes;
-        features16[3]  = server_pkt_max;
-        features16[4]  = bytes_fraction_client;
-        features16[5]  = (float)client_bytes;
-        features16[6]  = size_max;
-        features16[7]  = n_server_f;
-        features16[8]  = client_pkt_mean;
+        features16[1]  = (float)server_bytes;
+        features16[2]  = n_server_f;
+        features16[3]  = (float)client_bytes;
+        features16[4]  = size_max;
+        features16[5]  = n_client_f;
+        features16[6]  = server_pkt_max;
+        features16[7]  = pkt_fraction_client;
+        features16[8]  = bytes_fraction_client;
         features16[9]  = dir_switches_f;
-        features16[10] = client_pkt_min;
-        features16[11] = size_mean;
-        features16[12] = pkt_fraction_client;
-        features16[13] = server_pkt_mean;
-        features16[14] = size_min;
-        features16[15] = server_pkt_min;
+        features16[10] = size_mean;
+        features16[11] = client_pkt_mean;
+        features16[12] = size_min;
+        features16[13] = client_pkt_min;
+        features16[14] = server_pkt_min;
+        features16[15] = server_pkt_mean;
 
-        /* Normalize & predict: update NUM_FEATURES to 16 and ensure FEATURE_MEAN/STD arrays match */
+        /* Normalize & predict: ensure FEATURE_MEAN/STD match NUM_FEATURES */
         ALIGN16 float features_scaled[16];
         normalize_features(features16, features_scaled, 16);
         int pred = predict_mlp(features_scaled, w->buf_a, w->buf_b);
         if (pred == 0) w->pred0++; else w->pred1++;
-        log_features_csv(key, features);
+
+        /* Log features — pass actual features buffer */
+        log_features_csv(key, features16);
+
         e->finalized = 1;  // prevent repeats
-        //int pred = predict_mlp_c_general(features, w->buf_a, w->buf_b);
 
         // Print flow ID + classification
         printf("Flow %u:%u -> %u:%u proto %u classified as %d\n",
-        key->src_ip, key->src_port,
-        key->dst_ip, key->dst_port,
-        key->protocol, pred);
-
-        // cleanup flows
-        //rte_hash_del_key(w->flow_table, key);
-        //reset_entry_per_core(w, index);
-
+               key->src_ip, key->src_port,
+               key->dst_ip, key->dst_port,
+               key->protocol, pred);
     }
 }
 
@@ -786,120 +715,119 @@ static struct worker_args worker_args[MAX_CORES];
     struct rte_mempool *mbuf_pool = w->mbuf_pool;
     struct rte_hash    *flow_table = w->flow_table;
 
-     uint16_t port;
-     uint16_t ret;
-     uint16_t queue_id = w->queue_id;
+    uint16_t port;
+    uint16_t ret;
+    uint16_t queue_id = w->queue_id;
 
-     struct flow_key key;
-     struct flow_entry entry;
+    struct flow_key key;
+    struct flow_entry entry;
  
-     double sample[5];
+    double sample[5];
  
-     RTE_ETH_FOREACH_DEV(port)
-     if (rte_eth_dev_socket_id(port) >= 0 &&
-         rte_eth_dev_socket_id(port) !=
-             (int)rte_socket_id())
-         printf("WARNING, port %u is on remote NUMA node to "
-                "polling thread.\n\tPerformance will "
-                "not be optimal.\n",
-                port);
+    RTE_ETH_FOREACH_DEV(port)
+    if (rte_eth_dev_socket_id(port) >= 0 &&
+        rte_eth_dev_socket_id(port) !=
+            (int)rte_socket_id())
+        printf("WARNING, port %u is on remote NUMA node to "
+            "polling thread.\n\tPerformance will "
+            "not be optimal.\n",
+            port);
  
-     printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n",
+    printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n",
             rte_lcore_id());
  
  
-     uint32_t pkt_count = 0;
+    uint32_t pkt_count = 0;
 
-     for (;;)
-     {
+    for (;;)
+    {
 
-            struct rte_mbuf *bufs[BURST_SIZE];
-            
-            uint16_t nb_rx = rte_eth_rx_burst(w->port_id, w->queue_id, bufs, BURST_SIZE);
-            //printf(" -> burst returned %u pkts\n", nb_rx);
-            if (unlikely(nb_rx == 0)) continue;
+        struct rte_mbuf *bufs[BURST_SIZE];
+        
+        uint16_t nb_rx = rte_eth_rx_burst(w->port_id, w->queue_id, bufs, BURST_SIZE);
+        //printf(" -> burst returned %u pkts\n", nb_rx);
+        if (unlikely(nb_rx == 0)) continue;
 
-            // break;
-            if (nb_rx > 0)
+        // break;
+        if (nb_rx > 0)
+        {
+            uint64_t start_cycles = rte_rdtsc_precise();
+
+        
+            received_packets+=nb_rx;
+            struct rte_ether_hdr *ethernet_header; 
+            struct rte_ipv4_hdr *pIP4Hdr;
+            struct rte_tcp_hdr *pTcpHdr;
+        
+            u_int16_t ethernet_type;
+            for (int i = 0; i < nb_rx; i++)
             {
-                uint64_t start_cycles = rte_rdtsc_precise();
+                // pkt_count +=1;
+                ethernet_header = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
+                ethernet_type = rte_be_to_cpu_16(ethernet_header->ether_type);
 
-            
-                received_packets+=nb_rx;
-                struct rte_ether_hdr *ethernet_header; 
-                struct rte_ipv4_hdr *pIP4Hdr;
-                struct rte_tcp_hdr *pTcpHdr;
-            
-                u_int16_t ethernet_type;
-                for (int i = 0; i < nb_rx; i++)
+                //swap
+                struct rte_ether_hdr *eth = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
+                struct rte_ether_addr tmp;
+                rte_ether_addr_copy(&eth->src_addr, &tmp);
+                rte_ether_addr_copy(&eth->dst_addr, &eth->src_addr);
+                rte_ether_addr_copy(&tmp,         &eth->dst_addr);
+                if (ethernet_type == RTE_ETHER_TYPE_IPV4)
                 {
-                    // pkt_count +=1;
-                    ethernet_header = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
-                    ethernet_type = rte_be_to_cpu_16(ethernet_header->ether_type);
+                    uint32_t ipdata_offset = sizeof(struct rte_ether_hdr);
 
-                    //swap
-                    struct rte_ether_hdr *eth = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
-                    struct rte_ether_addr tmp;
-                    rte_ether_addr_copy(&eth->src_addr, &tmp);
-                    rte_ether_addr_copy(&eth->dst_addr, &eth->src_addr);
-                    rte_ether_addr_copy(&tmp,         &eth->dst_addr);
-                    if (ethernet_type == RTE_ETHER_TYPE_IPV4)
+                    pIP4Hdr = rte_pktmbuf_mtod_offset(bufs[i], struct rte_ipv4_hdr *, ipdata_offset);
+                    uint32_t src_ip = rte_be_to_cpu_32(pIP4Hdr->src_addr);
+                    uint32_t dst_ip = rte_be_to_cpu_32(pIP4Hdr->dst_addr);
+                    uint8_t IPv4NextProtocol = pIP4Hdr->next_proto_id;
+                    ipdata_offset += (pIP4Hdr->version_ihl & RTE_IPV4_HDR_IHL_MASK) * RTE_IPV4_IHL_MULTIPLIER;
+
+                    if (IPv4NextProtocol == 6)
                     {
-                        uint32_t ipdata_offset = sizeof(struct rte_ether_hdr);
 
-                        pIP4Hdr = rte_pktmbuf_mtod_offset(bufs[i], struct rte_ipv4_hdr *, ipdata_offset);
-                        uint32_t src_ip = rte_be_to_cpu_32(pIP4Hdr->src_addr);
-                        uint32_t dst_ip = rte_be_to_cpu_32(pIP4Hdr->dst_addr);
-                        uint8_t IPv4NextProtocol = pIP4Hdr->next_proto_id;
-                        ipdata_offset += (pIP4Hdr->version_ihl & RTE_IPV4_HDR_IHL_MASK) * RTE_IPV4_IHL_MULTIPLIER;
+                        pTcpHdr = rte_pktmbuf_mtod_offset(bufs[i], struct rte_tcp_hdr *, ipdata_offset);
+                        uint16_t dst_port = rte_be_to_cpu_16(pTcpHdr->dst_port);
+                        uint16_t src_port = rte_be_to_cpu_16(pTcpHdr->src_port);
+                        uint8_t tcp_dataoffset = pTcpHdr->data_off >> 4;
+                        uint32_t tcpdata_offset = ipdata_offset + sizeof(struct rte_tcp_hdr) + (tcp_dataoffset - 5) * 4;
+                        /* figure out how many ‘1’ bits are set in TCP flags, or 0 otherwise */
+                        // integrate code below with down code
 
-                        if (IPv4NextProtocol == 6)
-                        {
+                        if (dst_port == 443 || src_port == 443) {
 
-                            pTcpHdr = rte_pktmbuf_mtod_offset(bufs[i], struct rte_tcp_hdr *, ipdata_offset);
-                            uint16_t dst_port = rte_be_to_cpu_16(pTcpHdr->dst_port);
-                            uint16_t src_port = rte_be_to_cpu_16(pTcpHdr->src_port);
-                            uint8_t tcp_dataoffset = pTcpHdr->data_off >> 4;
-                            uint32_t tcpdata_offset = ipdata_offset + sizeof(struct rte_tcp_hdr) + (tcp_dataoffset - 5) * 4;
-                            /* figure out how many ‘1’ bits are set in TCP flags, or 0 otherwise */
-                            // integrate code below with down code
-                        uint8_t flags_count = __builtin_popcount(pTcpHdr->tcp_flags);
+                            key.src_ip = dst_ip;  
+                            key.dst_ip = src_ip; 
+                            key.src_port = dst_port;
+                            key.dst_port = src_port;
+                            key.protocol = IPv4NextProtocol;
+                            
+                            bool is_client = (src_port != 443);
 
+                            canonicalize_5tuple(&key);
+                            uint16_t pkt_len = rte_be_to_cpu_16(pIP4Hdr->total_length);
+                            //printf("Pkt length: %" PRIu16 " bytes\n", pkt_len);
+                            //uint64_t pkt_time = is_timestamp_enabled(bufs[i]) ? get_hw_timestamp(bufs[i]) : 0; 
+                            //uint64_t pkt_time = rte_rdtsc_precise();
+                            //printf("Pkt time: %" PRIu64 " cycles\n", pkt_time);
+                            // printf("TSC frequency: %lu Hz\n", hz);
+                            
+                            // int prediction = predict_mlp(features);
+                            // uint64_t start_cycles = rte_rdtsc_precise();
 
-                        //printf("This is a application data packet");
-                        key.src_ip = dst_ip;  
-                        key.dst_ip = src_ip; 
-                        key.src_port = dst_port;
-                        key.dst_port = src_port;
-                        key.protocol = IPv4NextProtocol;
+                            handle_packet(&key, pkt_len, w, src_ip, src_port);
+                            // uint64_t end_cycles = rte_rdtsc_precise();
+                            // uint64_t inference_cycles = end_cycles - start_cycles;
 
-                        uint32_t orig_src_ip   = src_ip;
-                        uint16_t orig_src_port = src_port;
+                            // // Convert to nanoseconds
+                            // double latency_ns = ((double)inference_cycles / hz) * 1e9;
 
-                        canonicalize_5tuple(&key);
-                        uint16_t pkt_len = rte_be_to_cpu_16(pIP4Hdr->total_length);
-                        //printf("Pkt length: %" PRIu16 " bytes\n", pkt_len);
-                        //uint64_t pkt_time = is_timestamp_enabled(bufs[i]) ? get_hw_timestamp(bufs[i]) : 0; 
-                        uint64_t pkt_time = rte_rdtsc_precise();
-                        //printf("Pkt time: %" PRIu64 " cycles\n", pkt_time);
-                        // printf("TSC frequency: %lu Hz\n", hz);
-                        
-                        // int prediction = predict_mlp(features);
-                        // uint64_t start_cycles = rte_rdtsc_precise();
-
-                        handle_packet(&key, pkt_len, pkt_time, flags_count, w, orig_src_ip, orig_src_port, src_ip, src_port);
-                        // uint64_t end_cycles = rte_rdtsc_precise();
-                        // uint64_t inference_cycles = end_cycles - start_cycles;
-
-                        // // Convert to nanoseconds
-                        // double latency_ns = ((double)inference_cycles / hz) * 1e9;
-
-                        // printf("Latency: %.2f ns (%lu cycles)\n", latency_ns, inference_cycles);                                       
-                        
+                            // printf("Latency: %.2f ns (%lu cycles)\n", latency_ns, inference_cycles); 
+                        }
+                                                                       
                     }
                 }
             }
-            
+        
             //uint64_t end_cycles = rte_rdtsc_precise();
             //if (latency_count < MAX_SAMPLES) latency_cycles[latency_count++] = end_cycles - start_cycles;
             
@@ -943,7 +871,7 @@ static struct worker_args worker_args[MAX_CORES];
 
             // printf("Core %u proceesed %u packets\n",core_id,*packet_counter);
 
-            }
+        }
          
      }
  
