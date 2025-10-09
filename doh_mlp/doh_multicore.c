@@ -108,8 +108,7 @@ struct worker_args {
     uint32_t            next_free;
     uint16_t port_id;
 
-    uint64_t            pred0;
-    uint64_t            pred1;
+    uint64_t           *pred_count;
 };
 
 struct flow_key {
@@ -686,7 +685,7 @@ handle_packet(struct flow_key   *key,
         ALIGN16 float features_scaled[16];
         normalize_features(features16, features_scaled, 16);
         int pred = predict_mlp(features_scaled, w->buf_a, w->buf_b);
-        if (pred == 0) w->pred0++; else w->pred1++;
+        if (pred >= 0 && pred < MAX_CLASSES) w->pred_count[pred]++;
 
         /* Log features — pass actual features buffer */
         log_features_csv(key, features16);
@@ -1050,6 +1049,7 @@ static void on_terminate(int signo) {
     
     uint16_t queue_id = 0;
     uint16_t base_port = 0;  // your only port
+    int num_classes = LAYER_SIZES[NUM_LAYERS];  // output neurons
 
     for (unsigned core_id = 0; core_id < total_lcores; core_id++) {
         struct worker_args *w = &worker_args[core_id];
@@ -1064,8 +1064,12 @@ static void on_terminate(int signo) {
         // 2) Per-core state
         w->next_free  = 0;            // start allocating at slot 0
         w->queue_id   = queue_id++;   // one RX queue per core
-        w->pred0      = 0;   // NEW
-        w->pred1      = 0;   // NEW
+        /* allocate per-core prediction counters */
+        w->pred_count = malloc(sizeof(uint64_t) * num_classes);
+        if (!w->pred_count) {
+            rte_exit(EXIT_FAILURE, "malloc failed for pred_count core %u\n", core_id);
+        }
+        memset(w->pred_count, 0, sizeof(uint64_t) * num_classes);
         // 3) Scratch buffers for NEON inference
         if (posix_memalign((void**)&w->buf_a, 16, max_neurons * sizeof(float)) ||
             posix_memalign((void**)&w->buf_b, 16, max_neurons * sizeof(float))) {
@@ -1126,11 +1130,13 @@ static void on_terminate(int signo) {
      }
  
  
-     rte_eal_mp_wait_lcore();
- 
+    rte_eal_mp_wait_lcore();
+
      // free each per-core hash table
     for (unsigned core_id = 0; core_id < total_lcores; core_id++) {
         if (flow_tables[core_id]) {
+            free(worker_args[core_id].pred_count);
+            worker_args[core_id].pred_count = NULL;
             rte_hash_free(flow_tables[core_id]);
             flow_tables[core_id] = NULL;
         }
