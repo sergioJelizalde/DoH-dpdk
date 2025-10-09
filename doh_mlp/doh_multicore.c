@@ -258,72 +258,32 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t number_rings)
     return 0;
 }
 
- 
- 
- 
- // Start of HW timestamps
- static inline bool
-is_timestamp_enabled(const struct rte_mbuf *mbuf)
-{
-    static uint64_t timestamp_rx_dynflag;
-    int timestamp_rx_dynflag_offset;
 
-    if (timestamp_rx_dynflag == 0) {
-        timestamp_rx_dynflag_offset = rte_mbuf_dynflag_lookup(
-                RTE_MBUF_DYNFLAG_RX_TIMESTAMP_NAME, NULL);
-        if (timestamp_rx_dynflag_offset < 0)
-            return false;
-        timestamp_rx_dynflag = RTE_BIT64(timestamp_rx_dynflag_offset);
-    }
 
-    return (mbuf->ol_flags & timestamp_rx_dynflag) != 0;
-}
-
-static inline rte_mbuf_timestamp_t
-get_hw_timestamp(const struct rte_mbuf *mbuf)
-{
-    static int timestamp_dynfield_offset = -1;
-
-    if (timestamp_dynfield_offset < 0) {
-        timestamp_dynfield_offset = rte_mbuf_dynfield_lookup(
-                RTE_MBUF_DYNFIELD_TIMESTAMP_NAME, NULL);
-        if (timestamp_dynfield_offset < 0)
-            return 0;
-    }
-
-    return *RTE_MBUF_DYNFIELD(mbuf,
-            timestamp_dynfield_offset, rte_mbuf_timestamp_t *);
-}
-
-// End of HW timetamps
-
-static inline void log_features_csv(const struct flow_key *key, const float features[16]) {
+static inline void log_features_csv(const struct flow_key *key, const float features16[16]) {
     if (!g_feat_csv) return;
 
     int rc = fprintf(g_feat_csv,
-        "%u,%u,%u,%u,%u," /* src_ip,src_port,dst_ip,dst_port,proto */
-        "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
-        (unsigned)key->src_ip,
-        (unsigned)key->src_port,
-        (unsigned)key->dst_ip,
-        (unsigned)key->dst_port,
-        (unsigned)key->protocol,
-        (double)features[0],
-        (double)features[1],
-        (double)features[2],
-        (double)features[3],
-        (double)features[4],
-        (double)features[5],
-        (double)features[6],
-        (double)features[7],
-        (double)features[8],
-        (double)features[9],
-        (double)features[10],
-        (double)features[11],
-        (double)features[12],
-        (double)features[13],
-        (double)features[14],
-        (double)features[15]
+        "%u,%u,%u,%u,%u,"   // 5-tuple
+        "%u,%u,%u,%u,%u,%u,%u,%.6f,%.6f,%u,%.3f,%.3f,%u,%u,%u,%.3f\n",
+        key->src_ip, key->src_port, key->dst_ip, key->dst_port, key->protocol,
+        // 16 features in order:
+        (unsigned)features16[0],   // client_pkt_max
+        (unsigned)features16[1],   // server_bytes
+        (unsigned)features16[2],   // n_server
+        (unsigned)features16[3],   // client_bytes
+        (unsigned)features16[4],   // size_max
+        (unsigned)features16[5],   // n_client
+        (unsigned)features16[6],   // server_pkt_max
+        features16[7],             // pkt_fraction_client
+        features16[8],             // bytes_fraction_client
+        (unsigned)features16[9],   // dir_switches
+        features16[10],            // size_mean
+        features16[11],            // client_pkt_mean
+        (unsigned)features16[12],  // size_min
+        (unsigned)features16[13],  // client_pkt_min
+        (unsigned)features16[14],  // server_pkt_min
+        features16[15]             // server_pkt_mean
     );
 
     // Optional: flush periodically or on every write if you need durability
@@ -685,7 +645,7 @@ handle_packet(struct flow_key   *key,
         ALIGN16 float features_scaled[16];
         normalize_features(features16, features_scaled, 16);
         int pred = predict_mlp(features_scaled, w->buf_a, w->buf_b);
-        if (pred >= 0 && pred < MAX_CLASSES) w->pred_count[pred]++;
+        if (pred >= 0 && pred < NUM_CLASSES) w->pred_count[pred]++;
 
         /* Log features — pass actual features buffer */
         log_features_csv(key, features16);
@@ -798,16 +758,63 @@ static struct worker_args worker_args[MAX_CORES];
 
                         if (dst_port == 443 || src_port == 443) {
 
-                            key.src_ip = dst_ip;  
-                            key.dst_ip = src_ip; 
+                           /* Build canonical flow key (keep your convention) */
+                            key.src_ip = dst_ip;
+                            key.dst_ip = src_ip;
                             key.src_port = dst_port;
                             key.dst_port = src_port;
                             key.protocol = IPv4NextProtocol;
-                            
+
+                            /* Who sent this packet relative to port 443? */
                             bool is_client = (src_port != 443);
 
+                            /* Compute pointer to TCP payload and its total length (handles chained mbufs) */
+                            uint32_t pkt_total_len = rte_pktmbuf_pkt_len(bufs[i]);
+                            if (pkt_total_len <= tcpdata_offset) {
+                                /* No TCP payload */
+                                continue;
+                            }
+                            uint32_t payload_len = pkt_total_len - tcpdata_offset;
+
+                            /* We need at least 5 bytes to read the TLS record header:
+                             *   byte 0: content_type (23 = application_data)
+                             *   byte 1-2: version
+                             *   byte 3-4: length (big-endian)
+                             */
+                            if (payload_len < 5) {
+                                /* Not enough data to examine TLS record header; skip */
+                                continue;
+                            }
+
+                            /* Pointer to start of TCP payload (first segment) */
+                            uint8_t *tcp_payload = rte_pktmbuf_mtod_offset(bufs[i], uint8_t *, tcpdata_offset);
+
+                            /* Read TLS content type */
+                            uint8_t tls_content_type = tcp_payload[0];
+
+                            if (tls_content_type != 23) {
+                                /* Not TLS Application Data — skip (could be Handshake(22), Alert(21), ChangeCipherSpec(20), etc.) */
+                                continue;
+                            }
+
+                            /* Extract TLS record length from bytes 3..4 (big-endian) */
+                            uint16_t tls_record_len = (uint16_t)((tcp_payload[3] << 8) | tcp_payload[4]);
+
+                            /* Sanity: make sure the record length is plausible given payload_len.
+                               If tls_record_len > payload_len - 5, the record is fragmented (across TCP segments)
+                               and we skip for now. You can extend to reassemble if needed. */
+                            if ((uint32_t)tls_record_len > (payload_len - 5)) {
+                                /* record not complete in this TCP segment — skip */
+                                continue;
+                            }
+
+                            /* canonicalize key and call handle_packet using tls_record_len as pkt_len */
                             canonicalize_5tuple(&key);
-                            uint16_t pkt_len = rte_be_to_cpu_16(pIP4Hdr->total_length);
+
+                            /* use TLS application-data record length (in bytes) as the packet 'size' for features */
+                            uint16_t tls_payload_size = tls_record_len;
+
+
                             //printf("Pkt length: %" PRIu16 " bytes\n", pkt_len);
                             //uint64_t pkt_time = is_timestamp_enabled(bufs[i]) ? get_hw_timestamp(bufs[i]) : 0; 
                             //uint64_t pkt_time = rte_rdtsc_precise();
