@@ -92,7 +92,7 @@ static unsigned g_total_lcores = 0;
 static FILE *g_feat_csv = NULL;
 
 #define N_PACKETS 6
-#define NUM_FEATURES 8
+#define NUM_FEATURES 16
 #define INVALID_INDEX   UINT32_MAX
 
 #define MAX_FLOWS_PER_CORE 500000
@@ -121,9 +121,9 @@ struct flow_key {
 } __attribute__((packed));
 
 struct flow_entry {
+
     uint64_t first_timestamp;
     uint64_t last_timestamp;
-
     uint16_t pkt_count;
 
     /* packet‐length stats */
@@ -131,23 +131,34 @@ struct flow_entry {
     uint32_t len_max;
     uint64_t len_sum;      // for computing mean
 
-    /* inter‐arrival time (IAT) stats */
-    uint64_t iat_min;
-    uint64_t iat_max;
-    uint64_t iat_sum;      // for computing mean
 
-    /* total bytes in flow (you already had: total_len) */
-    uint64_t total_len;
+    /* directional bytes and counts */
+    uint64_t bytes_fwd;      // client/initiator -> server
+    uint64_t bytes_rev;      // server -> client
+    uint32_t pkt_count_fwd;  // n_client
+    uint32_t pkt_count_rev;  // n_server
 
-    uint64_t bytes_fwd;  // from initiator to responder
-    uint64_t bytes_rev;  // reverse direction
+    /* per-direction size stats */
+    uint32_t pkt_len_min_fwd;
+    uint32_t pkt_len_max_fwd;
+    uint64_t pkt_len_sum_fwd;
 
+    uint32_t pkt_len_min_rev;
+    uint32_t pkt_len_max_rev;
+    uint64_t pkt_len_sum_rev;
+
+    /* direction switch counter */
+    uint8_t last_direction;  // 0 = unknown, 1 = fwd (client), 2 = rev (server)
+    uint16_t dir_switches;
+
+    /* track first timestamps per direction for time-first-response (optional) */
+    uint64_t first_ts_fwd;
+    uint64_t first_ts_rev;
+
+    /* other fields you already have */
     uint32_t initiator_ip;
     uint16_t initiator_port;
-
-    /* sum of '1' bits in the TCP flags field */
     uint32_t flag_bits_sum;
-
     uint8_t finalized;
 };
 
@@ -306,18 +317,34 @@ get_hw_timestamp(const struct rte_mbuf *mbuf)
 
 // End of HW timetamps
 
-static inline void log_features_csv(const struct flow_key *key, const float f[8]) {
+static inline void log_features_csv(const struct flow_key *key, const float features[16]) {
     if (!g_feat_csv) return;
 
     fprintf(g_feat_csv,
-            "%u,%u,%u,%u,%u,%.0f,%.0f,%.6f,%.6f,%.6f,%.6f,%.0f,%.0f\n",
-            (unsigned)key->src_ip,
-            (unsigned)key->src_port,
-            (unsigned)key->dst_ip,
-            (unsigned)key->dst_port,
-            (unsigned)key->protocol,
-            (double)f[0], (double)f[1], (double)f[2], (double)f[3],
-            (double)f[4], (double)f[5], (double)f[6], (double)f[7]);
+        "%u,%u,%u,%u,%u," /* src_ip,src_port,dst_ip,dst_port,proto */
+        "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+        (unsigned)key->src_ip,
+        (unsigned)key->src_port,
+        (unsigned)key->dst_ip,
+        (unsigned)key->dst_port,
+        (unsigned)key->protocol,
+        (double)features[0],
+        (double)features[1],
+        (double)features[2],
+        (double)features[3],
+        (double)features[4],
+        (double)features[5],
+        (double)features[6],
+        (double)features[7],
+        (double)features[8],
+        (double)features[9],
+        (double)features[10],
+        (double)features[11],
+        (double)features[12],
+        (double)features[13],
+        (double)features[14],
+        (double)features[15]
+    );
 }
 
 static inline void canonicalize_5tuple(struct flow_key *k)
@@ -339,7 +366,7 @@ static inline void normalize_features(const float *in_raw, float *out_scaled, in
 
 
 // Fast piecewise sigmoid approximation
-static inline float fast_sigmoid(float x) {
+static inline float sigmoid_piece(float x) {
     if (x <= -4.0f) return 0.0f;
     else if (x <= -2.0f) return 0.0625f * x + 0.25f;
     else if (x <= 0.0f)  return 0.125f * x + 0.5f;
@@ -348,49 +375,18 @@ static inline float fast_sigmoid(float x) {
     else return 1.0f;
 }
 
-// Scalar MLP (arbitrary layers)
-static int predict_mlp_c_general(const float *in_features,
-                                 float *buf_a, float *buf_b) {
-    float *in_buf  = buf_a, *out_buf = buf_b;
-
-    memcpy(in_buf, in_features, LAYER_SIZES[0] * sizeof(float));
-
-    for (int L = 0; L < NUM_LAYERS; L++) {
-        int size_in   = LAYER_SIZES[L];
-        int size_out  = LAYER_SIZES[L+1];
-        int is_output = (L == NUM_LAYERS - 1);
-
-        const float *W = WEIGHTS[L];
-        const float *B = BIASES[L];
-
-        for (int j = 0; j < size_out; j++) {
-            float acc = B[j];
-            for (int k = 0; k < size_in; k++)
-                acc += W[k*size_out + j] * in_buf[k];
-            out_buf[j] = is_output
-                       ? fast_sigmoid(acc)
-                       : (acc > 0.0f ? acc : 0.0f);
-        }
-
-        // swap buffers
-        float *tmp = in_buf; in_buf = out_buf; out_buf = tmp;
-    }
-
-    // argmax
-    int final_size = LAYER_SIZES[NUM_LAYERS], best = 0;
-    float best_v = in_buf[0];
-    for (int i = 1; i < final_size; i++) {
-        if (in_buf[i] > best_v) {
-            best_v = in_buf[i];
-            best   = i;
-        }
-    }
-    float score = in_buf[0];
-    return (score > 0.5f) ? 1 : 0;
+// NEON version for vectorized code
+static inline float32x4_t sigmoid_neon(float32x4_t x) {
+    float32x4_t abs_x = vabsq_f32(x);
+    float32x4_t one = vdupq_n_f32(1.0f);
+    float32x4_t ratio = vdivq_f32(abs_x, vaddq_f32(one, abs_x));
+    uint32x4_t mask = vcgeq_f32(x, vdupq_n_f32(0.0f));
+    float32x4_t pos = ratio;
+    float32x4_t neg = vsubq_f32(one, ratio);
+    return vbslq_f32(mask, pos, neg);
 }
 
-// -------------------------------------------------------------------------
-// NEON‐vectorized layer
+// NEON‐vectorized layer with COMPILE-TIME path selection
 static void layer_forward_neon(const float *W, const float *B,
                                const float *in, float *out,
                                int size_in, int size_out,
@@ -406,20 +402,45 @@ static void layer_forward_neon(const float *W, const float *B,
         if (!is_output)  acc = vmaxq_f32(acc, vdupq_n_f32(0.0f));
         vst1q_f32(&out[j], acc);
     }
-    // tail scalar in case the model does not align to multiple of 4
+    
+    /*
+    // tail scalar
     for (; j < size_out; j++) {
         float a = B[j];
         for (int k = 0; k < size_in; k++)
             a += W[k*size_out + j] * in[k];
         out[j] = is_output ? a : (a > 0.0f ? a : 0.0f);
     }
+    */
+    
+    
     if (is_output) {
+        #if IS_BINARY_CLASSIFICATION
+        // BINARY PATH: fast_sigmoid for single output
         for (int i = 0; i < size_out; i++)
             out[i] = fast_sigmoid(out[i]);
+        
+        #elif IS_MULTICLASS_CLASSIFICATION  
+        // MULTICLASS PATH: softmax for multiple outputs
+        float max_val = out[0];
+        for (int i = 1; i < size_out; i++) {
+            if (out[i] > max_val) max_val = out[i];
+        }
+        
+        float sum = 0.0f;
+        for (int i = 0; i < size_out; i++) {
+            out[i] = expf(out[i] - max_val);
+            sum += out[i];
+        }
+        
+        for (int i = 0; i < size_out; i++) {
+            out[i] /= sum;
+        }
+        #endif
     }
 }
 
-// NEON MLP over arbitrary layers
+// NEON MLP with COMPILE-TIME path selection
 static int predict_mlp(const float *in_features, float *buf_a, float *buf_b) {
     float *in_buf = buf_a, *out_buf = buf_b;
     memcpy(in_buf, in_features, LAYER_SIZES[0] * sizeof(float));
@@ -434,16 +455,25 @@ static int predict_mlp(const float *in_features, float *buf_a, float *buf_b) {
     }
 
     int final_size = LAYER_SIZES[NUM_LAYERS];
-    if (final_size == 1) {
-        // after layer_forward_neon, output already passed through sigmoid
-        return (in_buf[0] >= 0.5f) ? 1 : 0;
-    } else {
-        int best = 0; float best_v = in_buf[0];
-        for (int i = 1; i < final_size; i++) if (in_buf[i] > best_v) { best_v = in_buf[i]; best = i; }
-        return best;
+    
+    #if IS_BINARY_CLASSIFICATION
+    // BINARY: threshold at 0.5
+    return (in_buf[0] >= 0.5f) ? 1 : 0;
+    
+    #elif IS_MULTICLASS_CLASSIFICATION
+    // MULTICLASS: return class with highest probability
+    int best_class = 0; 
+    float best_probability = in_buf[0];
+    for (int i = 1; i < final_size; i++) {
+        if (in_buf[i] > best_probability) { 
+            best_probability = in_buf[i]; 
+            best_class = i; 
+        }
     }
+    return best_class;
+    #endif
 }
-//--------------------------------------------------------------------------
+
 
 static inline uint32_t
 allocate_entry_per_core(struct worker_args *w)
@@ -468,7 +498,25 @@ reset_entry_per_core(struct worker_args *w, uint32_t idx)
 
     // Set initial “min” values so first packet always replaces them
     e->len_min = UINT32_MAX;
-    e->iat_min = UINT64_MAX;
+    e->pkt_len_min_fwd = UINT32_MAX;
+    e->pkt_len_min_rev = UINT32_MAX;
+    e->pkt_len_max_fwd = 0;
+    e->pkt_len_max_rev = 0;
+
+    e->pkt_len_sum_fwd = 0;
+    e->pkt_len_sum_rev = 0;
+
+    e->bytes_fwd = 0;
+    e->bytes_rev = 0;
+    e->pkt_count_fwd = 0;
+    e->pkt_count_rev = 0;
+
+    e->last_direction = 0;
+    e->dir_switches = 0;
+
+    e->total_len = 0;
+    e->flag_bits_sum = 0;
+
     e->finalized = 0;
 }
 
@@ -482,42 +530,64 @@ count_bits(uint8_t x) {
 void update_flow_entry(struct flow_entry *e,
                        uint16_t    pkt_len,
                        uint64_t    now_cycles,
-                       uint8_t     tcp_flags_count
-                       , bool is_fwd)
+                       uint8_t     tcp_flags_count,
+                       bool is_fwd)
 {
     if (e->finalized || e->pkt_count >= N_PACKETS) return;
 
-    uint64_t iat = (e->pkt_count > 0)
-                   ? (now_cycles - e->last_timestamp)
-                   : 0;
+    uint64_t iat = 0;
+    if (e->pkt_count > 0) {
+        /* overall inter-arrival time in cycles */
+        iat = (now_cycles > e->last_timestamp) ? (now_cycles - e->last_timestamp) : 0;
+    }
 
     if (e->pkt_count == 0) {
+        /* First packet in flow */
         e->len_min   = pkt_len;
         e->len_max   = pkt_len;
         e->len_sum   = pkt_len;
 
-        e->iat_min   = pkt_len;
-        e->iat_max   = pkt_len;
-        e->iat_sum   = pkt_len;
+        /* IATs default: we set min to UINT64_MAX sentinel and sum=0 */
+        e->iat_min   = UINT64_MAX;
+        e->iat_max   = 0;
+        e->iat_sum   = 0;
 
         e->first_timestamp = now_cycles;
         e->total_len       = pkt_len;
 
         e->flag_bits_sum   = tcp_flags_count;
 
-        e->bytes_fwd = 0;
-        e->bytes_rev = 0;
+        /* directional accounting for the first packet */
+        if (is_fwd) {
+            e->bytes_fwd = pkt_len;
+            e->pkt_count_fwd = 1;
+            e->pkt_len_sum_fwd = pkt_len;
+            e->pkt_len_min_fwd = pkt_len;
+            e->pkt_len_max_fwd = pkt_len;
+            e->first_ts_fwd = now_cycles;
+            e->last_ts_fwd = now_cycles;
+        } else {
+            e->bytes_rev = pkt_len;
+            e->pkt_count_rev = 1;
+            e->pkt_len_sum_rev = pkt_len;
+            e->pkt_len_min_rev = pkt_len;
+            e->pkt_len_max_rev = pkt_len;
+            e->first_ts_rev = now_cycles;
+            e->last_ts_rev = now_cycles;
+        }
 
     } else {
-        /* length stats */
-        if (pkt_len < e->len_min) e->len_min = pkt_len;
-        if (pkt_len > e->len_max) e->len_max = pkt_len;
+        /* length stats (global) */
+        if ((uint32_t)pkt_len < e->len_min) e->len_min = pkt_len;
+        if ((uint32_t)pkt_len > e->len_max) e->len_max = pkt_len;
         e->len_sum += pkt_len;
 
-        /* IAT stats */
-        if (iat < e->iat_min) e->iat_min = iat;
-        if (iat > e->iat_max) e->iat_max = iat;
-        e->iat_sum += iat;
+        /* IAT stats (overall) */
+        if (e->pkt_count > 0) {
+            if (iat < e->iat_min) e->iat_min = iat;
+            if (iat > e->iat_max) e->iat_max = iat;
+            e->iat_sum += iat;
+        }
 
         /* total bytes */
         e->total_len += pkt_len;
@@ -525,12 +595,50 @@ void update_flow_entry(struct flow_entry *e,
         /* flag bits sum */
         e->flag_bits_sum += tcp_flags_count;
 
-        // Directional byte counts
-        if (is_fwd) e->bytes_fwd += pkt_len;
-        else        e->bytes_rev += pkt_len;
+        /* Directional byte counts and per-direction size stats */
+        if (is_fwd) {
+            e->bytes_fwd += pkt_len;
+            e->pkt_count_fwd++;
+            e->pkt_len_sum_fwd += pkt_len;
+            if ((uint32_t)pkt_len < e->pkt_len_min_fwd) e->pkt_len_min_fwd = pkt_len;
+            if ((uint32_t)pkt_len > e->pkt_len_max_fwd) e->pkt_len_max_fwd = pkt_len;
 
+            /* timestamps for fwd */
+            if (e->first_ts_fwd == 0) e->first_ts_fwd = now_cycles;
+            /* compute per-direction last and optionally per-direction iat */
+            if (e->last_ts_fwd != 0) {
+                uint64_t iat_fwd = (now_cycles > e->last_ts_fwd) ? (now_cycles - e->last_ts_fwd) : 0;
+                if (iat_fwd < e->iat_min) e->iat_min = iat_fwd;
+                if (iat_fwd > e->iat_max) e->iat_max = iat_fwd;
+                e->iat_sum += iat_fwd;
+            }
+            e->last_ts_fwd = now_cycles;
+        } else {
+            e->bytes_rev += pkt_len;
+            e->pkt_count_rev++;
+            e->pkt_len_sum_rev += pkt_len;
+            if ((uint32_t)pkt_len < e->pkt_len_min_rev) e->pkt_len_min_rev = pkt_len;
+            if ((uint32_t)pkt_len > e->pkt_len_max_rev) e->pkt_len_max_rev = pkt_len;
+
+            if (e->first_ts_rev == 0) e->first_ts_rev = now_cycles;
+            if (e->last_ts_rev != 0) {
+                uint64_t iat_rev = (now_cycles > e->last_ts_rev) ? (now_cycles - e->last_ts_rev) : 0;
+                if (iat_rev < e->iat_min) e->iat_min = iat_rev;
+                if (iat_rev > e->iat_max) e->iat_max = iat_rev;
+                e->iat_sum += iat_rev;
+            }
+            e->last_ts_rev = now_cycles;
+        }
     }
 
+    /* direction switch detection */
+    uint8_t cur_dir = is_fwd ? 1 : 2;
+    if (e->last_direction != 0 && e->last_direction != cur_dir) {
+        e->dir_switches++;
+    }
+    e->last_direction = cur_dir;
+
+    /* finalize overall fields */
     e->last_timestamp = now_cycles;
     e->pkt_count++;
 }
@@ -582,27 +690,67 @@ handle_packet(struct flow_key   *key,
     if (!e->finalized && e->pkt_count == N_PACKETS) {
         double hz = (double) rte_get_tsc_hz();
 
-        float duration_us = (float)((e->last_timestamp - e->first_timestamp) * 1e6 / hz);
-        float pkt_size_mean = (float)(e->len_sum / (double)e->pkt_count);
+        /* convenience values */
+        uint32_t n_client = e->pkt_count_fwd;
+        uint32_t n_server = e->pkt_count_rev;
+        double client_bytes = (double)e->bytes_fwd;
+        double server_bytes = (double)e->bytes_rev;
+        double total_bytes = client_bytes + server_bytes;
+        double total_pkts = (double)(n_client + n_server);
 
-        float iat_mean = (float)(e->iat_sum / (double)(e->pkt_count - 1)) * 1e6f / hz;
+        /* global size stats */
+        float size_max = (e->len_max == 0 ? 0.0f : (float)e->len_max);
+        float size_min = (e->len_min == UINT32_MAX ? 0.0f : (float)e->len_min);
+        float size_mean = (e->pkt_count > 0) ? (float)(e->len_sum / (double)e->pkt_count) : 0.0f;
 
-        ALIGN16 float features[8] = {
-            duration_us,
-            (float)e->bytes_fwd,
-            (float)e->bytes_rev,
-            pkt_size_mean,
-            (float)e->len_max,
-            iat_mean,
-            (float)(e->iat_min / hz * 1e6),
-            (float)(e->iat_max / hz * 1e6)
-        };
+        /* client (fwd) stats */
+        float client_pkt_max  = (e->pkt_len_max_fwd == 0 ? 0.0f : (float)e->pkt_len_max_fwd);
+        float client_pkt_min  = (e->pkt_len_min_fwd == UINT32_MAX ? 0.0f : (float)e->pkt_len_min_fwd);
+        float client_pkt_mean = (e->pkt_count_fwd > 0) ? (float)(e->pkt_len_sum_fwd / (double)e->pkt_count_fwd) : 0.0f;
 
-        ALIGN16 float features_scaled[NUM_FEATURES];
-        normalize_features(features, features_scaled, NUM_FEATURES);
+        /* server (rev) stats */
+        float server_pkt_max  = (e->pkt_len_max_rev == 0 ? 0.0f : (float)e->pkt_len_max_rev);
+        float server_pkt_min  = (e->pkt_len_min_rev == UINT32_MAX ? 0.0f : (float)e->pkt_len_min_rev);
+        float server_pkt_mean = (e->pkt_count_rev > 0) ? (float)(e->pkt_len_sum_rev / (double)e->pkt_count_rev) : 0.0f;
+
+        /* counts cast to float */
+        float n_client_f = (float)n_client;
+        float n_server_f = (float)n_server;
+
+        /* fractions (guard divide-by-zero) */
+        float bytes_fraction_client = 0.0f;
+        if (total_bytes > 0.0) bytes_fraction_client = (float)(client_bytes / total_bytes);
+
+        float pkt_fraction_client = 0.0f;
+        if ((n_client + n_server) > 0) pkt_fraction_client = (float)((double)n_client / (double)(n_client + n_server));
+
+        /* dir_switches */
+        float dir_switches_f = (float)e->dir_switches;
+
+        /* Build features in supplied order (16 features) */
+        ALIGN16 float features16[16];
+        features16[0]  = client_pkt_max;
+        features16[1]  = n_client_f;
+        features16[2]  = (float)server_bytes;
+        features16[3]  = server_pkt_max;
+        features16[4]  = bytes_fraction_client;
+        features16[5]  = (float)client_bytes;
+        features16[6]  = size_max;
+        features16[7]  = n_server_f;
+        features16[8]  = client_pkt_mean;
+        features16[9]  = dir_switches_f;
+        features16[10] = client_pkt_min;
+        features16[11] = size_mean;
+        features16[12] = pkt_fraction_client;
+        features16[13] = server_pkt_mean;
+        features16[14] = size_min;
+        features16[15] = server_pkt_min;
+
+        /* Normalize & predict: update NUM_FEATURES to 16 and ensure FEATURE_MEAN/STD arrays match */
+        ALIGN16 float features_scaled[16];
+        normalize_features(features16, features_scaled, 16);
         int pred = predict_mlp(features_scaled, w->buf_a, w->buf_b);
-        if (pred == 0) w->pred0++;
-        else           w->pred1++;
+        if (pred == 0) w->pred0++; else w->pred1++;
         log_features_csv(key, features);
         e->finalized = 1;  // prevent repeats
         //int pred = predict_mlp_c_general(features, w->buf_a, w->buf_b);
@@ -687,8 +835,7 @@ static struct worker_args worker_args[MAX_CORES];
                 {
                     // pkt_count +=1;
                     ethernet_header = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
-                    ethernet_type = ethernet_header->ether_type;
-                    ethernet_type = rte_cpu_to_be_16(ethernet_type);
+                    ethernet_type = rte_be_to_cpu_16(ethernet_header->ether_type);
 
                     //swap
                     struct rte_ether_hdr *eth = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
@@ -696,7 +843,7 @@ static struct worker_args worker_args[MAX_CORES];
                     rte_ether_addr_copy(&eth->src_addr, &tmp);
                     rte_ether_addr_copy(&eth->dst_addr, &eth->src_addr);
                     rte_ether_addr_copy(&tmp,         &eth->dst_addr);
-                    if (ethernet_type == 2048)
+                    if (ethernet_type == RTE_ETHER_TYPE_IPV4)
                     {
                         uint32_t ipdata_offset = sizeof(struct rte_ether_hdr);
 
