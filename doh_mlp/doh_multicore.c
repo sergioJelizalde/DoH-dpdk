@@ -924,20 +924,36 @@ static struct worker_args worker_args[MAX_CORES];
 static void on_terminate(int signo) {
     if (g_feat_csv) { fflush(g_feat_csv); fclose(g_feat_csv); g_feat_csv = NULL; }
 
-    // Aggregate prediction stats across cores
-    uint64_t sum0 = 0, sum1 = 0;
-    for (unsigned core = 0; core < g_total_lcores; core++) {
-        sum0 += worker_args[core].pred0;
-        sum1 += worker_args[core].pred1;
-    }
-    uint64_t total = sum0 + sum1;
-    double pct0 = total ? (100.0 * (double)sum0 / (double)total) : 0.0;
-    double pct1 = total ? (100.0 * (double)sum1 / (double)total) : 0.0;
 
+    /* allocate accumulator on heap (safe for arbitrary num_classes) */
+    uint64_t *class_sum = malloc(sizeof(uint64_t) * NUM_CLASSES);
+    if (!class_sum) {
+        fprintf(stderr, "malloc failed for class_sum\n");
+        return;
+    }
+    memset(class_sum, 0, sizeof(uint64_t) * NUM_CLASSES);
+
+    /* Sum per-core counters into class_sum */
+    uint64_t total = 0;
+    for (unsigned core = 0; core < g_total_lcores; core++) {
+        uint64_t *pc = worker_args[core].pred_count;
+        if (!pc) continue; /* be robust if some core has no allocation */
+        for (int c = 0; c < NUM_CLASSES; c++) {
+            class_sum[c] += pc[c];
+            total += pc[c];
+        }
+    }
+
+    /* Print summary */
     printf("\n=== Prediction summary ===\n");
-    printf("class 0: %" PRIu64 " (%.2f%%)\n", sum0, pct0);
-    printf("class 1: %" PRIu64 " (%.2f%%)\n", sum1, pct1);
+    for (int c = 0; c < NUM_CLASSES; c++) {
+        double pct = total ? (100.0 * (double)class_sum[c] / (double)total) : 0.0;
+        printf("class %d: %" PRIu64 " (%.2f%%)\n", c, class_sum[c], pct);
+    }
     printf("total  : %" PRIu64 "\n", total);
+
+    /* cleanup */
+    free(class_sum);
 
     close_ports();
     rte_eal_cleanup();
@@ -1049,7 +1065,6 @@ static void on_terminate(int signo) {
     
     uint16_t queue_id = 0;
     uint16_t base_port = 0;  // your only port
-    int num_classes = LAYER_SIZES[NUM_LAYERS];  // output neurons
 
     for (unsigned core_id = 0; core_id < total_lcores; core_id++) {
         struct worker_args *w = &worker_args[core_id];
@@ -1065,11 +1080,11 @@ static void on_terminate(int signo) {
         w->next_free  = 0;            // start allocating at slot 0
         w->queue_id   = queue_id++;   // one RX queue per core
         /* allocate per-core prediction counters */
-        w->pred_count = malloc(sizeof(uint64_t) * num_classes);
+        w->pred_count = malloc(sizeof(uint64_t) * NUM_CLASSES);
         if (!w->pred_count) {
             rte_exit(EXIT_FAILURE, "malloc failed for pred_count core %u\n", core_id);
         }
-        memset(w->pred_count, 0, sizeof(uint64_t) * num_classes);
+        memset(w->pred_count, 0, sizeof(uint64_t) * NUM_CLASSES);
         // 3) Scratch buffers for NEON inference
         if (posix_memalign((void**)&w->buf_a, 16, max_neurons * sizeof(float)) ||
             posix_memalign((void**)&w->buf_b, 16, max_neurons * sizeof(float))) {
