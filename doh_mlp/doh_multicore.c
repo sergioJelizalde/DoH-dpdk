@@ -49,7 +49,7 @@
  #include <rte_jhash.h>
  
  #include <rte_flow.h>
- 
+ #include <math.h>
  //for bluefield2
  #include <arm_neon.h>
 
@@ -301,7 +301,7 @@ get_hw_timestamp(const struct rte_mbuf *mbuf)
 static inline void log_features_csv(const struct flow_key *key, const float features[16]) {
     if (!g_feat_csv) return;
 
-    fprintf(g_feat_csv,
+    int rc = fprintf(g_feat_csv,
         "%u,%u,%u,%u,%u," /* src_ip,src_port,dst_ip,dst_port,proto */
         "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
         (unsigned)key->src_ip,
@@ -326,6 +326,12 @@ static inline void log_features_csv(const struct flow_key *key, const float feat
         (double)features[14],
         (double)features[15]
     );
+
+    // Optional: flush periodically or on every write if you need durability
+    if (rc < 0) {
+        // handle error (optional): maybe print to stderr or set a flag
+        perror("fprintf(g_feat_csv) failed");
+    }
 }
 
 static inline void canonicalize_5tuple(struct flow_key *k)
@@ -399,7 +405,7 @@ static void layer_forward_neon(const float *W, const float *B,
         #if IS_BINARY_CLASSIFICATION
         // BINARY PATH: fast_sigmoid for single output
         for (int i = 0; i < size_out; i++)
-            out[i] = fast_sigmoid(out[i]);
+            out[i] = sigmoid_piece(out[i]);
         
         #elif IS_MULTICLASS_CLASSIFICATION  
         // MULTICLASS PATH: softmax for multiple outputs
@@ -571,8 +577,6 @@ handle_packet(struct flow_key   *key,
 
         struct flow_entry *new_e = &w->flow_pool[index];
         reset_entry_per_core(w, index);
-
-        index = index;
     } else {
         // found existing flow
         index = (uint32_t)(uintptr_t)data_ptr;
@@ -589,7 +593,7 @@ handle_packet(struct flow_key   *key,
     uint32_t total_pkts = n_client + n_server;
 
     /* only finalize / build features when we've seen exactly N_PACKETS packets */
-    if (!e->finalized && total_pkts == N_PACKETS) {
+    if (!e->finalized && total_pkts >= N_PACKETS) {
 
         double client_bytes = (double)e->bytes_client;
         double server_bytes = (double)e->bytes_server;
@@ -814,7 +818,7 @@ static struct worker_args worker_args[MAX_CORES];
                             // int prediction = predict_mlp(features);
                             // uint64_t start_cycles = rte_rdtsc_precise();
 
-                            handle_packet(&key, pkt_len, w, src_ip, src_port);
+                            handle_packet(&key, pkt_len, w, is_client);
                             // uint64_t end_cycles = rte_rdtsc_precise();
                             // uint64_t inference_cycles = end_cycles - start_cycles;
 
@@ -967,8 +971,10 @@ static void on_terminate(int signo) {
 
     fprintf(g_feat_csv,
     "src_ip_u32,src_port,dst_ip_u32,dst_port,proto,"
-    "duration_us,bytes_fwd,bytes_rev,pkt_size_mean,"
-    "pkt_size_max,iat_mean_us,iat_min_us,iat_max_us\n");
+    "client_pkt_max,server_bytes,n_server,client_bytes,size_max,"
+    "n_client,server_pkt_max,pkt_fraction_client,bytes_fraction_client,"
+    "dir_switches,size_mean,client_pkt_mean,size_min,client_pkt_min,"
+    "server_pkt_min,server_pkt_mean\n");
 
     signal(SIGINT,  on_terminate);
     signal(SIGTERM, on_terminate);
