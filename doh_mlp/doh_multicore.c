@@ -36,7 +36,9 @@
  #include <ctype.h>
  #include <errno.h>
  #include <getopt.h>
- #include <signal.h>
+
+#include <signal.h>
+#include <stdatomic.h>
  
  #include <rte_eal.h>
  #include <rte_common.h>
@@ -84,10 +86,12 @@ static unsigned g_total_lcores = 0;
  
 #define ALIGN16 __attribute__((aligned(16)))
 
-//#define MAX_SAMPLES 10000
-//static uint64_t *latency_cycles;
-//static size_t    latency_count = 0;
+#define MAX_CORES       RTE_MAX_LCORE
+#define MAX_SAMPLES_PER_CORE 10000
+static uint64_t *latency_cycles[MAX_CORES];
+static size_t latency_count[MAX_CORES] = {0};
 
+static volatile sig_atomic_t force_quit = 0;
 
 static FILE *g_feat_csv = NULL;
 
@@ -145,6 +149,14 @@ struct flow_entry {
 /* Statically allocate pools for every possible lcore */
 static struct flow_entry flow_pools[MAX_CORES][MAX_FLOWS_PER_CORE];
 static struct rte_hash *flow_tables[MAX_CORES];
+
+
+/* simple async-signal-safe handler */
+static void simple_signal_handler(int signo)
+{
+    (void)signo;
+    force_quit = 1;
+}
 
  /* >8 End of launching function on lcore. */
  static inline int
@@ -258,6 +270,29 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t number_rings)
     return 0;
 }
 
+static void print_latency_stats(void) {
+    uint64_t tsc_hz = rte_get_tsc_hz();
+    
+    for (unsigned core = 0; core < g_total_lcores; core++) {
+        if (latency_count[core] == 0) continue;
+        
+        uint64_t sum = 0, min = UINT64_MAX, max = 0;
+        for (size_t i = 0; i < latency_count[core]; i++) {
+            uint64_t val = latency_cycles[core][i];
+            sum += val;
+            if (val < min) min = val;
+            if (val > max) max = val;
+        }
+        
+        double avg_cycles = (double)sum / latency_count[core];
+        double avg_ns = (avg_cycles / tsc_hz) * 1e9;
+        double min_ns = ((double)min / tsc_hz) * 1e9;
+        double max_ns = ((double)max / tsc_hz) * 1e9;
+        
+        printf("Core %u: %zu samples, avg=%.2f ns (min=%.2f, max=%.2f)\n",
+               core, latency_count[core], avg_ns, min_ns, max_ns);
+    }
+}
 
 
 static inline void log_features_csv(const struct flow_key *key, const float features16[16]) {
@@ -674,7 +709,7 @@ static struct worker_args worker_args[MAX_CORES];
  static int lcore_main(void *args)
  {
     struct worker_args *w = (struct worker_args *)args;
-
+    unsigned core_id = rte_lcore_id();
     struct rte_mempool *mbuf_pool = w->mbuf_pool;
     struct rte_hash    *flow_table = w->flow_table;
 
@@ -704,6 +739,12 @@ static struct worker_args worker_args[MAX_CORES];
 
     for (;;)
     {
+        // Check shutdown flag at the start of each iteration
+  
+        if (force_quit) {
+            printf("Core %u: quitting due to signal\n", core_id);
+            break;
+        }
 
         struct rte_mbuf *bufs[BURST_SIZE];
         
@@ -725,6 +766,7 @@ static struct worker_args worker_args[MAX_CORES];
             u_int16_t ethernet_type;
             for (int i = 0; i < nb_rx; i++)
             {
+                //uint64_t start_cycles = rte_rdtsc_precise();
                 // pkt_count +=1;
                 ethernet_header = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
                 ethernet_type = rte_be_to_cpu_16(ethernet_header->ether_type);
@@ -824,9 +866,11 @@ static struct worker_args worker_args[MAX_CORES];
                             // int prediction = predict_mlp(features);
                             // uint64_t start_cycles = rte_rdtsc_precise();
 
-                            handle_packet(&key, pkt_len, w, is_client);
-                            // uint64_t end_cycles = rte_rdtsc_precise();
-                            // uint64_t inference_cycles = end_cycles - start_cycles;
+                            handle_packet(&key, tls_payload_size, w, is_client);
+
+                            //uint64_t end_cycles = rte_rdtsc_precise();
+                            //uint64_t inference_cycles = end_cycles - start_cycles;
+                            //if (latency_count[core_id] < MAX_SAMPLES_PER_CORE) latency_cycles[core_id][latency_count[core_id]++] = inference_cycles;
 
                             // // Convert to nanoseconds
                             // double latency_ns = ((double)inference_cycles / hz) * 1e9;
@@ -837,22 +881,9 @@ static struct worker_args worker_args[MAX_CORES];
                     }
                 }
             }
-        
-            //uint64_t end_cycles = rte_rdtsc_precise();
-            //if (latency_count < MAX_SAMPLES) latency_cycles[latency_count++] = end_cycles - start_cycles;
-            
-            /*
-            //for testing number flows in every flow table per core
-            static uint64_t stats_counter = 0;
-            stats_counter += nb_rx;  // or just ++stats_counter for per‐packet
-
-            if (stats_counter >= 10000) {   // every 10k packets…
-                uint32_t used = rte_hash_count(w->flow_table);
-                printf("Core %u: %u active flows\n",
-                    rte_lcore_id(), used);
-                stats_counter = 0;
-            }
-            */
+            uint64_t end_cycles = rte_rdtsc_precise();
+            uint64_t inference_cycles = end_cycles - start_cycles;
+            if (latency_count[core_id] < MAX_SAMPLES_PER_CORE) latency_cycles[core_id][latency_count[core_id]++] = inference_cycles;
 
             if (unlikely(nb_rx == 0))
                 continue;
@@ -883,9 +914,8 @@ static struct worker_args worker_args[MAX_CORES];
 
         }
          
-     }
- 
-     return 0;
+    }
+    return 0;
  }
  
 
@@ -907,65 +937,148 @@ static struct worker_args worker_args[MAX_CORES];
          printf(" Done\n");
      }
  }
- 
-
-
-/*
-// signal handler 
- static void sigint_handler(int signo) {
-    FILE *f = fopen("latencies.csv", "w");
-    if (!f) {
-        perror("fopen");
-        exit(1);
-    }
-    fprintf(f, "sample,cycles\n");
-    for (size_t i = 0; i < latency_count; i++) {
-        fprintf(f, "%zu,%lu\n", i, latency_cycles[i]);
-    }
-    fclose(f);
-    printf("Wrote %zu samples to latencies.csv\n", latency_count);
-    exit(0);
-}
-*/
 
 static void on_terminate(int signo) {
-    if (g_feat_csv) { fflush(g_feat_csv); fclose(g_feat_csv); g_feat_csv = NULL; }
-
-
-    /* allocate accumulator on heap (safe for arbitrary num_classes) */
-    uint64_t *class_sum = malloc(sizeof(uint64_t) * NUM_CLASSES);
-    if (!class_sum) {
-        fprintf(stderr, "malloc failed for class_sum\n");
-        return;
+    printf("\n=== Received shutdown signal - Stopping gracefully ===\n");
+    
+    // Set shutdown flag to stop worker cores
+    
+    // Wait for all worker cores to finish
+    printf("Waiting for worker cores to finish...\n");
+    rte_eal_mp_wait_lcore();
+    
+    // Small delay to allow workers to exit their loops
+    usleep(100000); // 100ms
+    
+    // Then proceed with CSV writing and cleanup
+    printf("Writing statistics to CSV files...\n");
+    
+    uint64_t tsc_hz = rte_get_tsc_hz();
+    
+    // 1. Close features CSV
+    if (g_feat_csv) {
+        fflush(g_feat_csv);
+        fclose(g_feat_csv);
+        g_feat_csv = NULL;
+        printf("✓ Closed flow_features.csv\n");
     }
-    memset(class_sum, 0, sizeof(uint64_t) * NUM_CLASSES);
-
-    /* Sum per-core counters into class_sum */
-    uint64_t total = 0;
-    for (unsigned core = 0; core < g_total_lcores; core++) {
-        uint64_t *pc = worker_args[core].pred_count;
-        if (!pc) continue; /* be robust if some core has no allocation */
-        for (int c = 0; c < NUM_CLASSES; c++) {
-            class_sum[c] += pc[c];
-            total += pc[c];
+    
+    // 2. Write latency data
+    for (unsigned core = 0; core < g_total_lcores && core < MAX_CORES; core++) {
+        if (latency_cycles[core] != NULL && latency_count[core] > 0) {
+            char filename[64];
+            snprintf(filename, sizeof(filename), "latencies_core%u.csv", core);
+            
+            FILE *f = fopen(filename, "w");
+            if (f) {
+                fprintf(f, "sample,cycles,ns\n");
+                for (size_t i = 0; i < latency_count[core] && i < MAX_SAMPLES_PER_CORE; i++) {
+                    double ns = ((double)latency_cycles[core][i] / tsc_hz) * 1e9;
+                    fprintf(f, "%zu,%lu,%.2f\n", i, latency_cycles[core][i], ns);
+                }
+                fclose(f);
+                printf("✓ Core %u: %zu latency samples\n", core, latency_count[core]);
+            }
         }
     }
-
-    /* Print summary */
-    printf("\n=== Prediction summary ===\n");
-    for (int c = 0; c < NUM_CLASSES; c++) {
-        double pct = total ? (100.0 * (double)class_sum[c] / (double)total) : 0.0;
-        printf("class %d: %" PRIu64 " (%.2f%%)\n", c, class_sum[c], pct);
+    
+    // 3. Write prediction summary
+    FILE *f_pred = fopen("prediction_summary.csv", "w");
+    if (f_pred) {
+        uint64_t total_predictions = 0;
+        uint64_t class_counts[NUM_CLASSES] = {0};
+        
+        for (unsigned core = 0; core < g_total_lcores && core < MAX_CORES; core++) {
+            if (worker_args[core].pred_count != NULL) {
+                for (int c = 0; c < NUM_CLASSES; c++) {
+                    class_counts[c] += worker_args[core].pred_count[c];
+                    total_predictions += worker_args[core].pred_count[c];
+                }
+            }
+        }
+        
+        fprintf(f_pred, "class,count,percentage\n");
+        for (int c = 0; c < NUM_CLASSES; c++) {
+            double pct = total_predictions ? (100.0 * (double)class_counts[c] / (double)total_predictions) : 0.0;
+            fprintf(f_pred, "%d,%" PRIu64 ",%.2f\n", c, class_counts[c], pct);
+        }
+        fprintf(f_pred, "total,%" PRIu64 ",100.00\n", total_predictions);
+        fclose(f_pred);
+        printf("✓ Prediction summary: %" PRIu64 " predictions\n", total_predictions);
     }
-    printf("total  : %" PRIu64 "\n", total);
-
-    /* cleanup */
-    free(class_sum);
-
+    
+    // 4. Write packet statistics
+    FILE *f_pkt = fopen("packet_stats.csv", "w");
+    if (f_pkt) {
+        double drop_rate = (received_packets > 0) ? 
+            (1.0 - (double)processed_packets/received_packets) * 100.0 : 0.0;
+        fprintf(f_pkt, "received,processed,drop_rate_percent\n");
+        fprintf(f_pkt, "%.0f,%.0f,%.2f\n", received_packets, processed_packets, drop_rate);
+        fclose(f_pkt);
+        printf("✓ Packet stats: %.0f received, %.0f processed\n", received_packets, processed_packets);
+    }
+    
+    printf("Performing cleanup...\n");
+    
+    // Cleanup memory
+    for (unsigned core = 0; core < g_total_lcores && core < MAX_CORES; core++) {
+        if (latency_cycles[core] != NULL) {
+            free(latency_cycles[core]);
+            latency_cycles[core] = NULL;
+        }
+    }
+    
+    printf("Closing ports...\n");
     close_ports();
+    
+    printf("DPDK cleanup...\n");
     rte_eal_cleanup();
+    
+    printf("=== Clean shutdown completed ===\n");
     _exit(0);
 }
+
+// signal handler 
+ static void sigint_handler(int signo) {
+    uint64_t tsc_hz = rte_get_tsc_hz();
+    
+    // Write individual core files
+    for (unsigned core = 0; core < g_total_lcores; core++) {
+        char filename[64];
+        snprintf(filename, sizeof(filename), "latencies_core%u.csv", core);
+        
+        FILE *f = fopen(filename, "w");
+        if (!f) {
+            perror("fopen");
+            continue;
+        }
+        
+        fprintf(f, "sample,cycles,ns\n");
+        for (size_t i = 0; i < latency_count[core]; i++) {
+            double ns = ((double)latency_cycles[core][i] / tsc_hz) * 1e9;
+            fprintf(f, "%zu,%lu,%.2f\n", i, latency_cycles[core][i], ns);
+        }
+        fclose(f);
+        printf("Wrote %zu samples to %s\n", latency_count[core], filename);
+    }
+    
+    // Write aggregated file
+    FILE *f_all = fopen("latencies_all.csv", "w");
+    if (f_all) {
+        fprintf(f_all, "core,sample,cycles,ns\n");
+        for (unsigned core = 0; core < g_total_lcores; core++) {
+            for (size_t i = 0; i < latency_count[core]; i++) {
+                double ns = ((double)latency_cycles[core][i] / tsc_hz) * 1e9;
+                fprintf(f_all, "%u,%zu,%lu,%.2f\n", core, i, latency_cycles[core][i], ns);
+            }
+        }
+        fclose(f_all);
+        printf("Wrote aggregated data to latencies_all.csv\n");
+    }
+    
+    on_terminate(signo); // call your existing cleanup
+}
+
 
  /* Initialization of Environment Abstraction Layer (EAL). 8< */
  int main(int argc, char **argv)
@@ -998,21 +1111,21 @@ static void on_terminate(int signo) {
     "dir_switches,size_mean,client_pkt_mean,size_min,client_pkt_min,"
     "server_pkt_min,server_pkt_mean\n");
 
-    signal(SIGINT,  on_terminate);
-    signal(SIGTERM, on_terminate);
-    /*
-    latency_cycles = malloc(sizeof(*latency_cycles) * MAX_SAMPLES);
-    if (!latency_cycles)
-        rte_exit(EXIT_FAILURE, "malloc failed\n");
+    //signal(SIGINT,  on_terminate);
+    //signal(SIGTERM, on_terminate);
 
-    // install SIGINT handler before you start lcore_main
-    struct sigaction sa = {
-        .sa_handler = sigint_handler,
-    };
-    sigaction(SIGINT, &sa, NULL);
-    */
+    signal(SIGINT,  simple_signal_handler);
+    signal(SIGTERM, simple_signal_handler);
 
+    unsigned total_lcores = rte_lcore_count();
+    g_total_lcores = total_lcores;  
 
+    for (unsigned core = 0; core < total_lcores; core++) {
+        latency_cycles[core] = malloc(sizeof(uint64_t) * MAX_SAMPLES_PER_CORE);
+        if (!latency_cycles[core])
+            rte_exit(EXIT_FAILURE, "malloc failed for core %u latencies\n", core);
+        latency_count[core] = 0;
+    }
 
     uint64_t tsc_hz = rte_get_tsc_hz();
     printf("TSC frequency: %lu Hz (%.2f GHz)\n",
@@ -1020,8 +1133,7 @@ static void on_terminate(int signo) {
 
     printf("DPDK version: %s\n", rte_version());
 
-    unsigned total_lcores = rte_lcore_count();
-    g_total_lcores = total_lcores;   
+     
     
     struct rte_hash_parameters p = {
     .entries           = MAX_FLOWS_PER_CORE,
@@ -1104,16 +1216,19 @@ static void on_terminate(int signo) {
         }
     }
 
-    // Finally, run master on its own core (often core 0)
+    // run master0)
     unsigned master = rte_get_main_lcore();
     struct worker_args *w_master = &worker_args[master];
-    // (mbuf_pool, flow_table, flow_pool, next_free, queue_id already set above)
+    
     lcore_main(w_master);
 
-   
+    if (force_quit) {
+        on_terminate(SIGTERM);   
+    }
     
+    //
 
-     char command[50];
+    char command[50];
      
      while (1) {
          printf("Enter command: ");
@@ -1124,28 +1239,29 @@ static void on_terminate(int signo) {
              RTE_LCORE_FOREACH_WORKER(lcore_id)
              {
  
-                 char output_file[50]; //= "../datasets/DoHBrw/predictions.txt";
-                 
-                 printf("Enter file name: ");
-                 scanf("%20s", output_file);   
- 
-                 FILE *file = fopen(output_file, "w");
- 
-                 if (file == NULL) {
-                     printf("Error opening the file.\n");
-                     return -1;
-                 }
- 
-                 fprintf(file, "Reeived Processed Dropped\n");
-                 // printf("Core %u processed %u packets\n",lcore_id,packet_counters[lcore_id]);
-                 fprintf(file, "%f %f %.3f \n",received_packets,processed_packets,(double)(processed_packets/received_packets));
-                 right_predictions = 0;
-                 wrong_predictions = 0;
-                 received_packets = 0;
-                 processed_packets = 0;
- 
-                 fclose(file);
-                 // packet_counters[lcore_id] = 0;
+                char output_file[50]; //= "../datasets/DoHBrw/predictions.txt";
+                
+                printf("Enter file name: "); 
+                scanf("%20s", output_file);   
+
+                FILE *file = fopen(output_file, "w");
+
+                if (file == NULL) {
+                    printf("Error opening the file.\n");
+                    return -1;
+                }
+
+                fprintf(file, "Reeived Processed Dropped\n");
+                // printf("Core %u processed %u packets\n",lcore_id,packet_counters[lcore_id]);
+                fprintf(file, "%f %f %.3f \n",received_packets,processed_packets,(double)(processed_packets/received_packets));
+                right_predictions = 0;
+                wrong_predictions = 0;
+                received_packets = 0;
+                processed_packets = 0;
+
+                print_latency_stats();  
+                fclose(file);
+                // packet_counters[lcore_id] = 0;
              }
               //break;
          }
