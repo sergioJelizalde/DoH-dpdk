@@ -102,6 +102,17 @@ static FILE *g_feat_csv = NULL;
 #define MAX_FLOWS_PER_CORE 500000
 #define MAX_CORES       RTE_MAX_LCORE
 
+
+#define RSS_HASH_KEY_LENGTH 40
+static uint8_t hash_key[RSS_HASH_KEY_LENGTH] = {
+        0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+        0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+        0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+        0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+        0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+};
+
+
 struct worker_args {
     struct rte_mempool *mbuf_pool;
     struct rte_hash    *flow_table;
@@ -198,19 +209,20 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t number_rings)
     struct rte_eth_conf port_conf = {
         .rxmode = {
             .mq_mode  = RTE_ETH_MQ_RX_RSS,
-            .offloads = RTE_ETH_RX_OFFLOAD_TIMESTAMP, /* we'll clear below if unsupported */
+            .offloads = RTE_ETH_RX_OFFLOAD_TIMESTAMP, // Enable RX timestamping
         },
         .rx_adv_conf = {
             .rss_conf = {
-                .rss_key = NULL,
+                .rss_key = hash_key,
                 .rss_hf  = RTE_ETH_RSS_IPV4 | RTE_ETH_RSS_TCP,
+                .rss_key_len = RSS_HASH_KEY_LENGTH,  // Toeplitz uses 40-byte key
             },
         },
         .txmode = {
             .mq_mode = RTE_ETH_MQ_TX_NONE,
         },
     };
-
+    
     /* Remove unsupported offloads */
     if (!(dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TIMESTAMP)) {
         printf("  -> NIC does not support RX_TIMESTAMP. Disabling offload.\n");
@@ -300,33 +312,33 @@ static inline void log_features_csv(const struct flow_key *key, const float feat
 
     int rc = fprintf(g_feat_csv,
         "%u,%u,%u,%u,%u,"   // 5-tuple
-        "%u,%u,%u,%u,%u,%u,%u,%.6f,%.6f,%u,%.3f,%.3f,%u,%u,%u,%.3f\n",
+        "%u,%u,%.6f,%u,%.6f,%u,%u,%.3f,%.3f,%u,%u,%.3f,%.3f\n",
         key->src_ip, key->src_port, key->dst_ip, key->dst_port, key->protocol,
-        // 16 features in order:
+
+        // 16 features in the new order:
         (unsigned)features16[0],   // client_pkt_max
-        (unsigned)features16[1],   // server_bytes
-        (unsigned)features16[2],   // n_server
-        (unsigned)features16[3],   // client_bytes
-        (unsigned)features16[4],   // size_max
-        (unsigned)features16[5],   // n_client
-        (unsigned)features16[6],   // server_pkt_max
-        features16[7],             // pkt_fraction_client
-        features16[8],             // bytes_fraction_client
-        (unsigned)features16[9],   // dir_switches
-        features16[10],            // size_mean
-        features16[11],            // client_pkt_mean
-        (unsigned)features16[12],  // size_min
-        (unsigned)features16[13],  // client_pkt_min
-        (unsigned)features16[14],  // server_pkt_min
-        features16[15]             // server_pkt_mean
+        (unsigned)features16[1],   // n_client
+        features16[2],             // bytes_fraction_client
+        (unsigned)features16[3],   // n_server
+        features16[4],             // pkt_fraction_client
+        (unsigned)features16[5],   // dir_switches
+        (unsigned)features16[6],   // size_max
+        features16[7],             // size_mean
+        (unsigned)features16[8],   // client_pkt_min
+        (unsigned)features16[9],   // client_bytes
+        (unsigned)features16[10],  // size_min
+        (unsigned)features16[11],  // server_pkt_max
+        (unsigned)features16[12],  // server_pkt_min
+        (unsigned)features16[13],  // server_bytes
+        features16[14],            // server_pkt_mean
+        features16[15]             // client_pkt_mean
     );
 
-    // Optional: flush periodically or on every write if you need durability
     if (rc < 0) {
-        // handle error (optional): maybe print to stderr or set a flag
         perror("fprintf(g_feat_csv) failed");
     }
 }
+
 
 static inline void canonicalize_5tuple(struct flow_key *k)
 {
@@ -660,21 +672,21 @@ handle_packet(struct flow_key   *key,
         */
         ALIGN16 float features16[16];
         features16[0]  = client_pkt_max;
-        features16[1]  = (float)server_bytes;
-        features16[2]  = n_server_f;
-        features16[3]  = (float)client_bytes;
-        features16[4]  = size_max;
-        features16[5]  = n_client_f;
-        features16[6]  = server_pkt_max;
-        features16[7]  = pkt_fraction_client;
-        features16[8]  = bytes_fraction_client;
-        features16[9]  = dir_switches_f;
-        features16[10] = size_mean;
-        features16[11] = client_pkt_mean;
-        features16[12] = size_min;
-        features16[13] = client_pkt_min;
-        features16[14] = server_pkt_min;
-        features16[15] = server_pkt_mean;
+        features16[1]  = n_client_f;
+        features16[2]  = bytes_fraction_client;
+        features16[3]  = n_server_f;
+        features16[4]  = pkt_fraction_client;
+        features16[5]  = dir_switches_f;
+        features16[6]  = size_max;
+        features16[7]  = size_mean;
+        features16[8]  = client_pkt_min;
+        features16[9]  = (float)client_bytes;
+        features16[10] = size_min;
+        features16[11] = server_pkt_max;
+        features16[12] = server_pkt_min;
+        features16[13] = (float)server_bytes;
+        features16[14] = server_pkt_mean;
+        features16[15] = client_pkt_mean;
 
         /* Normalize & predict: ensure FEATURE_MEAN/STD match NUM_FEATURES */
         ALIGN16 float features_scaled[16];
@@ -1106,10 +1118,10 @@ static void on_terminate(int signo) {
 
     fprintf(g_feat_csv,
     "src_ip_u32,src_port,dst_ip_u32,dst_port,proto,"
-    "client_pkt_max,server_bytes,n_server,client_bytes,size_max,"
-    "n_client,server_pkt_max,pkt_fraction_client,bytes_fraction_client,"
-    "dir_switches,size_mean,client_pkt_mean,size_min,client_pkt_min,"
-    "server_pkt_min,server_pkt_mean\n");
+    "client_pkt_max,n_client,bytes_fraction_client,n_server,pkt_fraction_client,"
+    "dir_switches,size_max,size_mean,client_pkt_min,client_bytes,"
+    "size_min,server_pkt_max,server_pkt_min,server_bytes,server_pkt_mean,client_pkt_mean\n");
+
 
     //signal(SIGINT,  on_terminate);
     //signal(SIGTERM, on_terminate);
