@@ -998,7 +998,7 @@ static void on_terminate(int signo) {
         fflush(g_feat_csv);
         fclose(g_feat_csv);
         g_feat_csv = NULL;
-        printf("✓ Closed flow_features.csv\n");
+        printf("Closed flow_features.csv\n");
     }
     
     // 2. Write latency data
@@ -1042,7 +1042,7 @@ static void on_terminate(int signo) {
         }
         fprintf(f_pred, "total,%" PRIu64 ",100.00\n", total_predictions);
         fclose(f_pred);
-        printf("✓ Prediction summary: %" PRIu64 " predictions\n", total_predictions);
+        printf("Prediction summary: %" PRIu64 " predictions\n", total_predictions);
     }
     
     // 4. Write packet statistics
@@ -1053,7 +1053,7 @@ static void on_terminate(int signo) {
         fprintf(f_pkt, "received,processed,drop_rate_percent\n");
         fprintf(f_pkt, "%.0f,%.0f,%.2f\n", received_packets, processed_packets, drop_rate);
         fclose(f_pkt);
-        printf("✓ Packet stats: %.0f received, %.0f processed\n", received_packets, processed_packets);
+        printf("Packet stats: %.0f received, %.0f processed\n", received_packets, processed_packets);
     }
     
 
@@ -1254,7 +1254,7 @@ static void on_terminate(int signo) {
     for (unsigned core_id = 0; core_id < total_lcores; core_id++) {
         struct worker_args *w = &worker_args[core_id];
 
-        // 1) Shared resources
+        // Shared resources
         w->mbuf_pool  = mbuf_pool;
         w->flow_table = flow_tables[core_id];
         w->flow_pool  = flow_pools[core_id];
@@ -1275,7 +1275,7 @@ static void on_terminate(int signo) {
         memset(w->sample_class, 0, SAMPLES_CAP * sizeof(int32_t));
 
 
-        // 2) Per-core state
+        //  Per-core state
         w->next_free  = 0;            // start allocating at slot 0
         w->queue_id   = queue_id++;   // one RX queue per core
         /* allocate per-core prediction counters */
@@ -1284,13 +1284,13 @@ static void on_terminate(int signo) {
             rte_exit(EXIT_FAILURE, "malloc failed for pred_count core %u\n", core_id);
         }
         memset(w->pred_count, 0, sizeof(uint64_t) * NUM_CLASSES);
-        // 3) Scratch buffers for NEON inference
+        // Scratch buffers for NEON inference
         if (posix_memalign((void**)&w->buf_a, 16, max_neurons * sizeof(float)) ||
             posix_memalign((void**)&w->buf_b, 16, max_neurons * sizeof(float))) {
             rte_exit(EXIT_FAILURE, "posix_memalign failed for core %u\n", core_id);
         }
 
-        // 4) Launch worker on that core (skip core 0 if you plan to use it as master below)
+        // Launch worker on that core (skip core 0 if you plan to use it as master below)
         if (core_id != rte_get_main_lcore()) {
             rte_eal_remote_launch(lcore_main, w, core_id);
         }
