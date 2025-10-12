@@ -661,7 +661,7 @@ handle_packet(struct flow_key   *key,
         /* dir_switches */
         float dir_switches_f = (float)e->dir_switches;
 
-        /* Build features in the exact order you requested:
+        /* 
            0: client_pkt_max
            1: server_bytes
            2: n_server
