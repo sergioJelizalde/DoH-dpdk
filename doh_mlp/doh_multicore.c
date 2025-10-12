@@ -123,6 +123,13 @@ struct worker_args {
     uint32_t            next_free;
     uint16_t port_id;
 
+    /* per-worker timing buffers - allocate at init */
+    uint64_t *feat_cycles;   /* length: samples_capacity */
+    uint64_t *infer_cycles;  /* length: samples_capacity */
+    int32_t  *sample_class;  /* length: samples_capacity */
+    size_t    samples_capacity;
+    size_t    samples_count;
+
     uint64_t           *pred_count;
 };
 
@@ -312,25 +319,25 @@ static inline void log_features_csv(const struct flow_key *key, const float feat
 
     int rc = fprintf(g_feat_csv,
         "%u,%u,%u,%u,%u,"   // 5-tuple
-        "%u,%u,%.6f,%u,%.6f,%u,%u,%.3f,%.3f,%u,%u,%.3f,%.3f\n",
+        "%u,%u,%.6f,%u,%.6f,%.0f,%u,%u,%.3f,%.3f,%u,%.0f,%u,%u,%.3f\n",
         key->src_ip, key->src_port, key->dst_ip, key->dst_port, key->protocol,
 
-        // 16 features in the new order:
+        /* 16 features in the updated order */
         (unsigned)features16[0],   // client_pkt_max
         (unsigned)features16[1],   // n_client
         features16[2],             // bytes_fraction_client
         (unsigned)features16[3],   // n_server
         features16[4],             // pkt_fraction_client
-        (unsigned)features16[5],   // dir_switches
-        (unsigned)features16[6],   // size_max
-        features16[7],             // size_mean
-        (unsigned)features16[8],   // client_pkt_min
-        (unsigned)features16[9],   // client_bytes
-        (unsigned)features16[10],  // size_min
-        (unsigned)features16[11],  // server_pkt_max
-        (unsigned)features16[12],  // server_pkt_min
-        (unsigned)features16[13],  // server_bytes
-        features16[14],            // server_pkt_mean
+        features16[5],             // client_bytes
+        (unsigned)features16[6],   // server_pkt_max
+        (unsigned)features16[7],   // size_min
+        features16[8],             // size_mean
+        features16[9],             // server_pkt_mean
+        (unsigned)features16[10],  // dir_switches
+        features16[11],            // server_bytes
+        (unsigned)features16[12],  // size_max
+        (unsigned)features16[13],  // client_pkt_min
+        (unsigned)features16[14],  // server_pkt_min
         features16[15]             // client_pkt_mean
     );
 
@@ -338,6 +345,8 @@ static inline void log_features_csv(const struct flow_key *key, const float feat
         perror("fprintf(g_feat_csv) failed");
     }
 }
+
+
 
 
 static inline void canonicalize_5tuple(struct flow_key *k)
@@ -676,24 +685,41 @@ handle_packet(struct flow_key   *key,
         features16[2]  = bytes_fraction_client;
         features16[3]  = n_server_f;
         features16[4]  = pkt_fraction_client;
-        features16[5]  = dir_switches_f;
-        features16[6]  = size_max;
-        features16[7]  = size_mean;
-        features16[8]  = client_pkt_min;
-        features16[9]  = (float)client_bytes;
-        features16[10] = size_min;
-        features16[11] = server_pkt_max;
-        features16[12] = server_pkt_min;
-        features16[13] = (float)server_bytes;
-        features16[14] = server_pkt_mean;
+        features16[5]  = (float)client_bytes;
+        features16[6]  = server_pkt_max;
+        features16[7]  = size_min;
+        features16[8]  = size_mean;
+        features16[9]  = server_pkt_mean;
+        features16[10] = dir_switches_f;
+        features16[11] = (float)server_bytes;
+        features16[12] = size_max;
+        features16[13] = client_pkt_min;
+        features16[14] = server_pkt_min;
         features16[15] = client_pkt_mean;
 
-        /* Normalize & predict: ensure FEATURE_MEAN/STD match NUM_FEATURES */
-        ALIGN16 float features_scaled[16];
-        normalize_features(features16, features_scaled, 16);
-        int pred = predict_mlp(features_scaled, w->buf_a, w->buf_b);
-        if (pred >= 0 && pred < NUM_CLASSES) w->pred_count[pred]++;
 
+
+
+        /* Normalize & predict: ensure FEATURE_MEAN/STD match NUM_FEATURES */
+       
+        ALIGN16 float features_scaled[16];
+
+        uint64_t t0_feat = rte_rdtsc_precise();
+        normalize_features(features16, features_scaled, 16);
+        uint64_t t1_feat = rte_rdtsc_precise();
+
+        int64_t t0_inf = rte_rdtsc_precise();
+        int pred = predict_mlp(features_scaled, w->buf_a, w->buf_b);
+        uint64_t t1_inf = rte_rdtsc_precise();
+
+        if (pred >= 0 && pred < NUM_CLASSES) w->pred_count[pred]++;
+        size_t idx = w->samples_count;
+        if (idx < w->samples_capacity) {
+            w->feat_cycles[idx]  = t1_feat - t0_feat;
+            w->infer_cycles[idx] = t1_inf  - t0_inf;
+            w->sample_class[idx] = pred;
+            w->samples_count = idx + 1;
+        }
         /* Log features — pass actual features buffer */
         log_features_csv(key, features16);
 
@@ -1030,6 +1056,31 @@ static void on_terminate(int signo) {
         printf("✓ Packet stats: %.0f received, %.0f processed\n", received_packets, processed_packets);
     }
     
+
+    for (unsigned core = 0; core < g_total_lcores; core++) {
+        struct worker_args *w = &worker_args[core];
+        if (!w->feat_cycles || w->samples_count == 0) continue;
+
+        char fname[64];
+        snprintf(fname, sizeof(fname), "timings_core%u.csv", core);
+        FILE *f = fopen(fname, "w");
+        if (!f) continue;
+
+        fprintf(f, "sample,class,feat_cycles,inf_cycles\n");
+        for (size_t i = 0; i < w->samples_count; i++) {
+            fprintf(f, "%zu,%d,%" PRIu64 ",%" PRIu64 "\n",
+                    i, w->sample_class[i], w->feat_cycles[i], w->infer_cycles[i]);
+        }
+        fclose(f);
+        printf("✓ Core %u: %zu timing samples saved\n", core, w->samples_count);
+
+        free(w->feat_cycles);
+        free(w->infer_cycles);
+        free(w->sample_class);
+        w->feat_cycles = w->infer_cycles = (void *)0;
+    }
+
+
     printf("Performing cleanup...\n");
     
     // Cleanup memory
@@ -1119,8 +1170,11 @@ static void on_terminate(int signo) {
     fprintf(g_feat_csv,
     "src_ip_u32,src_port,dst_ip_u32,dst_port,proto,"
     "client_pkt_max,n_client,bytes_fraction_client,n_server,pkt_fraction_client,"
-    "dir_switches,size_max,size_mean,client_pkt_min,client_bytes,"
-    "size_min,server_pkt_max,server_pkt_min,server_bytes,server_pkt_mean,client_pkt_mean\n");
+    "client_bytes,server_pkt_max,size_min,size_mean,server_pkt_mean,"
+    "dir_switches,server_bytes,size_max,client_pkt_min,server_pkt_min,client_pkt_mean\n");
+
+
+
 
 
     //signal(SIGINT,  on_terminate);
@@ -1205,6 +1259,20 @@ static void on_terminate(int signo) {
         w->flow_table = flow_tables[core_id];
         w->flow_pool  = flow_pools[core_id];
         w->port_id  = base_port;
+
+        const size_t SAMPLES_CAP = MAX_SAMPLES_PER_CORE;
+        w->samples_capacity = SAMPLES_CAP;
+        w->samples_count = 0;
+
+        if (posix_memalign((void **)&w->feat_cycles, 64, SAMPLES_CAP * sizeof(uint64_t)) ||
+            posix_memalign((void **)&w->infer_cycles, 64, SAMPLES_CAP * sizeof(uint64_t)) ||
+            posix_memalign((void **)&w->sample_class, 64, SAMPLES_CAP * sizeof(int32_t))) {
+            rte_exit(EXIT_FAILURE, "posix_memalign failed for per-core timing buffers (core %u)\n", core_id);
+        }
+
+        memset(w->feat_cycles, 0, SAMPLES_CAP * sizeof(uint64_t));
+        memset(w->infer_cycles, 0, SAMPLES_CAP * sizeof(uint64_t));
+        memset(w->sample_class, 0, SAMPLES_CAP * sizeof(int32_t));
 
 
         // 2) Per-core state
