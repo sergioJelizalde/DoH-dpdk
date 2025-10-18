@@ -87,7 +87,7 @@ static unsigned g_total_lcores = 0;
 #define ALIGN16 __attribute__((aligned(16)))
 
 #define MAX_CORES       RTE_MAX_LCORE
-#define MAX_SAMPLES_PER_CORE 10000
+#define MAX_SAMPLES_PER_CORE 5000
 static uint64_t *latency_cycles[MAX_CORES];
 static size_t latency_count[MAX_CORES] = {0};
 
@@ -319,22 +319,22 @@ static inline void log_features_csv(const struct flow_key *key, const float feat
 
     int rc = fprintf(g_feat_csv,
         "%u,%u,%u,%u,%u,"   // 5-tuple
-        "%u,%u,%.6f,%u,%.6f,%.0f,%u,%u,%.3f,%.3f,%u,%.0f,%u,%u,%.3f\n",
+        "%u,%u,%.6f,%u,%.6f,%.0f,%u,%u,%.3f,%.3f,%u,%.0f,%u,%u,%u,%.3f\n",
         key->src_ip, key->src_port, key->dst_ip, key->dst_port, key->protocol,
 
-        /* 16 features in the updated order */
+        /* 16 features in the requested order */
         (unsigned)features16[0],   // client_pkt_max
         (unsigned)features16[1],   // n_client
         features16[2],             // bytes_fraction_client
         (unsigned)features16[3],   // n_server
         features16[4],             // pkt_fraction_client
-        features16[5],             // client_bytes
+        features16[5],             // client_bytes (printed as integer via "%.0f")
         (unsigned)features16[6],   // server_pkt_max
         (unsigned)features16[7],   // size_min
         features16[8],             // size_mean
         features16[9],             // server_pkt_mean
         (unsigned)features16[10],  // dir_switches
-        features16[11],            // server_bytes
+        features16[11],            // server_bytes (printed as integer via "%.0f")
         (unsigned)features16[12],  // size_max
         (unsigned)features16[13],  // client_pkt_min
         (unsigned)features16[14],  // server_pkt_min
@@ -345,6 +345,7 @@ static inline void log_features_csv(const struct flow_key *key, const float feat
         perror("fprintf(g_feat_csv) failed");
     }
 }
+
 
 
 
@@ -661,23 +662,23 @@ handle_packet(struct flow_key   *key,
         /* dir_switches */
         float dir_switches_f = (float)e->dir_switches;
 
-        /* 
-           0: client_pkt_max
-           1: server_bytes
-           2: n_server
-           3: client_bytes
-           4: size_max
-           5: n_client
-           6: server_pkt_max
-           7: pkt_fraction_client
-           8: bytes_fraction_client
-           9: dir_switches
-           10: size_mean
-           11: client_pkt_mean
-           12: size_min
-           13: client_pkt_min
-           14: server_pkt_min
-           15: server_pkt_mean
+        /* Feature index mapping:
+        0: client_pkt_max
+        1: n_client
+        2: bytes_fraction_client
+        3: n_server
+        4: pkt_fraction_client
+        5: client_bytes
+        6: server_pkt_max
+        7: size_min
+        8: size_mean
+        9: server_pkt_mean
+        10: dir_switches
+        11: server_bytes
+        12: size_max
+        13: client_pkt_min
+        14: server_pkt_min
+        15: client_pkt_mean
         */
         ALIGN16 float features16[16];
         features16[0]  = client_pkt_max;
@@ -696,6 +697,7 @@ handle_packet(struct flow_key   *key,
         features16[13] = client_pkt_min;
         features16[14] = server_pkt_min;
         features16[15] = client_pkt_mean;
+
 
 
 
@@ -721,15 +723,15 @@ handle_packet(struct flow_key   *key,
             w->samples_count = idx + 1;
         }
         /* Log features — pass actual features buffer */
-        log_features_csv(key, features16);
+        //log_features_csv(key, features16);
 
         e->finalized = 1;  // prevent repeats
 
         // Print flow ID + classification
-        printf("Flow %u:%u -> %u:%u proto %u classified as %d\n",
+        /*printf("Flow %u:%u -> %u:%u proto %u classified as %d\n",
                key->src_ip, key->src_port,
                key->dst_ip, key->dst_port,
-               key->protocol, pred);
+               key->protocol, pred);*/
     }
 }
 
@@ -793,7 +795,7 @@ static struct worker_args worker_args[MAX_CORES];
         // break;
         if (nb_rx > 0)
         {
-            uint64_t start_cycles = rte_rdtsc_precise();
+            uint64_t start_cycles = rte_rdtsc_precise(); 
 
         
             received_packets+=nb_rx;
@@ -1172,9 +1174,6 @@ static void on_terminate(int signo) {
     "client_pkt_max,n_client,bytes_fraction_client,n_server,pkt_fraction_client,"
     "client_bytes,server_pkt_max,size_min,size_mean,server_pkt_mean,"
     "dir_switches,server_bytes,size_max,client_pkt_min,server_pkt_min,client_pkt_mean\n");
-
-
-
 
 
     //signal(SIGINT,  on_terminate);
