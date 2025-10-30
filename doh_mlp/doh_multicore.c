@@ -49,7 +49,9 @@
 
  #include <rte_hash.h>
  #include <rte_jhash.h>
- 
+ #include <unistd.h>  //  usleep
+#include <rte_hash_crc.h>  // rte_hash_crc
+
  #include <rte_flow.h>
  #include <math.h>
  //for bluefield2
@@ -95,7 +97,7 @@ static volatile sig_atomic_t force_quit = 0;
 
 static FILE *g_feat_csv = NULL;
 
-#define N_PACKETS 16
+#define N_PACKETS 64
 #define NUM_FEATURES 16
 #define INVALID_INDEX   UINT32_MAX
 
@@ -498,22 +500,7 @@ allocate_entry_per_core(struct worker_args *w)
 }
 */
 
-static inline uint32_t
-allocate_entry_lockfree(struct worker_args *w)
-{
-    if (w->free_flow_head == INVALID_INDEX) {
-        return INVALID_INDEX;  // No free flows
-    }
-    
-    uint32_t index = w->free_flow_head;
-    w->free_flow_head = w->flow_pool[index].next_free;
-    w->free_flow_count--;
-    
-    // Reset the entry
-    reset_entry_per_core(w, index);
-    
-    return index;
-}
+
 
 static inline void
 free_flow_entry(struct worker_args *w, uint32_t index)
@@ -558,6 +545,24 @@ reset_entry_per_core(struct worker_args *w, uint32_t idx)
     e->last_packet_tsc = 0;
 
 }
+
+static inline uint32_t
+allocate_entry_lockfree(struct worker_args *w)
+{
+    if (w->free_flow_head == INVALID_INDEX) {
+        return INVALID_INDEX;  // No free flows
+    }
+    
+    uint32_t index = w->free_flow_head;
+    w->free_flow_head = w->flow_pool[index].next_free;
+    w->free_flow_count--;
+    
+    // Reset the entry
+    reset_entry_per_core(w, index);
+    
+    return index;
+}
+
 
 static inline uint8_t
 count_bits(uint8_t x) {
@@ -848,6 +853,9 @@ static struct worker_args worker_args[MAX_CORES];
  
     uint32_t pkt_count = 0;
 
+    uint64_t last_print = rte_rdtsc();
+    uint64_t print_interval = 5 * rte_get_tsc_hz(); // Print every 5 seconds
+    
     for (;;)
     {
         // Check shutdown flag at the start of each iteration
@@ -860,13 +868,23 @@ static struct worker_args worker_args[MAX_CORES];
         struct rte_mbuf *bufs[BURST_SIZE];
         
         uint16_t nb_rx = rte_eth_rx_burst(w->port_id, w->queue_id, bufs, BURST_SIZE);
+
+        // Print flow count every 5 seconds
+        uint64_t now = rte_rdtsc();
+        if (now - last_print > print_interval) {
+            uint32_t flow_count = rte_hash_count(w->flow_table);
+            printf("Core %u: %u active flows\n", core_id, flow_count);
+            last_print = now;
+        }
+        
+
         //printf(" -> burst returned %u pkts\n", nb_rx);
         if (unlikely(nb_rx == 0)) continue;
 
         // break;
         if (nb_rx > 0)
         {
-            uint64_t start_cycles = rte_rdtsc_precise(); 
+            //uint64_t start_cycles = rte_rdtsc_precise(); 
 
         
             received_packets+=nb_rx;
@@ -875,126 +893,78 @@ static struct worker_args worker_args[MAX_CORES];
             struct rte_tcp_hdr *pTcpHdr;
         
             u_int16_t ethernet_type;
-            for (int i = 0; i < nb_rx; i++)
-            {
-                //uint64_t start_cycles = rte_rdtsc_precise();
-                // pkt_count +=1;
-                ethernet_header = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
-                ethernet_type = rte_be_to_cpu_16(ethernet_header->ether_type);
-
-                //swap
-                struct rte_ether_hdr *eth = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
+            for (int i = 0; i < nb_rx; i++) {
+                // SINGLE memory access point for entire packet
+                uint8_t *pkt_data = rte_pktmbuf_mtod(bufs[i], uint8_t*);
+                uint32_t pkt_total_len = rte_pktmbuf_pkt_len(bufs[i]);
+                
+                // Parse Ethernet header
+                struct rte_ether_hdr *eth = (struct rte_ether_hdr *)pkt_data;
+                uint16_t ethernet_type = rte_be_to_cpu_16(eth->ether_type);
+                
+                // Swap MAC addresses in place
                 struct rte_ether_addr tmp;
                 rte_ether_addr_copy(&eth->src_addr, &tmp);
                 rte_ether_addr_copy(&eth->dst_addr, &eth->src_addr);
-                rte_ether_addr_copy(&tmp,         &eth->dst_addr);
-                if (ethernet_type == RTE_ETHER_TYPE_IPV4)
-                {
-                    uint32_t ipdata_offset = sizeof(struct rte_ether_hdr);
-
-                    pIP4Hdr = rte_pktmbuf_mtod_offset(bufs[i], struct rte_ipv4_hdr *, ipdata_offset);
-                    uint32_t src_ip = rte_be_to_cpu_32(pIP4Hdr->src_addr);
-                    uint32_t dst_ip = rte_be_to_cpu_32(pIP4Hdr->dst_addr);
-                    uint8_t IPv4NextProtocol = pIP4Hdr->next_proto_id;
-                    ipdata_offset += (pIP4Hdr->version_ihl & RTE_IPV4_HDR_IHL_MASK) * RTE_IPV4_IHL_MULTIPLIER;
-
-                    if (IPv4NextProtocol == 6)
-                    {
-
-                        pTcpHdr = rte_pktmbuf_mtod_offset(bufs[i], struct rte_tcp_hdr *, ipdata_offset);
-                        uint16_t dst_port = rte_be_to_cpu_16(pTcpHdr->dst_port);
-                        uint16_t src_port = rte_be_to_cpu_16(pTcpHdr->src_port);
-                        uint8_t tcp_dataoffset = pTcpHdr->data_off >> 4;
-                        uint32_t tcpdata_offset = ipdata_offset + sizeof(struct rte_tcp_hdr) + (tcp_dataoffset - 5) * 4;
-                        /* figure out how many ‘1’ bits are set in TCP flags, or 0 otherwise */
-                        // integrate code below with down code
-
-                        if (dst_port == 443 || src_port == 443) {
-
-                           /* Build canonical flow key (keep your convention) */
-                            key.src_ip = dst_ip;
-                            key.dst_ip = src_ip;
-                            key.src_port = dst_port;
-                            key.dst_port = src_port;
-                            key.protocol = IPv4NextProtocol;
-
-                            /* Who sent this packet relative to port 443? */
-                            bool is_client = (src_port != 443);
-
-                            /* Compute pointer to TCP payload and its total length (handles chained mbufs) */
-                            uint32_t pkt_total_len = rte_pktmbuf_pkt_len(bufs[i]);
-                            if (pkt_total_len <= tcpdata_offset) {
-                                /* No TCP payload */
-                                continue;
-                            }
-                            uint32_t payload_len = pkt_total_len - tcpdata_offset;
-
-                            /* We need at least 5 bytes to read the TLS record header:
-                             *   byte 0: content_type (23 = application_data)
-                             *   byte 1-2: version
-                             *   byte 3-4: length (big-endian)
-                             */
-                            if (payload_len < 5) {
-                                /* Not enough data to examine TLS record header; skip */
-                                continue;
-                            }
-
-                            /* Pointer to start of TCP payload (first segment) */
-                            uint8_t *tcp_payload = rte_pktmbuf_mtod_offset(bufs[i], uint8_t *, tcpdata_offset);
-
-                            /* Read TLS content type */
-                            uint8_t tls_content_type = tcp_payload[0];
-
-                            if (tls_content_type != 23) {
-                                /* Not TLS Application Data — skip (could be Handshake(22), Alert(21), ChangeCipherSpec(20), etc.) */
-                                continue;
-                            }
-
-                            /* Extract TLS record length from bytes 3..4 (big-endian) */
-                            uint16_t tls_record_len = (uint16_t)((tcp_payload[3] << 8) | tcp_payload[4]);
-
-                            /* Sanity: make sure the record length is plausible given payload_len.
-                               If tls_record_len > payload_len - 5, the record is fragmented (across TCP segments)
-                               and we skip for now. You can extend to reassemble if needed. */
-                            if ((uint32_t)tls_record_len > (payload_len - 5)) {
-                                /* record not complete in this TCP segment — skip */
-                                continue;
-                            }
-
-                            /* canonicalize key and call handle_packet using tls_record_len as pkt_len */
-                            canonicalize_5tuple(&key);
-
-                            /* use TLS application-data record length (in bytes) as the packet 'size' for features */
-                            uint16_t tls_payload_size = tls_record_len;
-
-
-                            //printf("Pkt length: %" PRIu16 " bytes\n", pkt_len);
-                            //uint64_t pkt_time = is_timestamp_enabled(bufs[i]) ? get_hw_timestamp(bufs[i]) : 0; 
-                            //uint64_t pkt_time = rte_rdtsc_precise();
-                            //printf("Pkt time: %" PRIu64 " cycles\n", pkt_time);
-                            // printf("TSC frequency: %lu Hz\n", hz);
-                            
-                            // int prediction = predict_mlp(features);
-                            // uint64_t start_cycles = rte_rdtsc_precise();
-
-                            handle_packet(&key, tls_payload_size, w, is_client);
-
-                            //uint64_t end_cycles = rte_rdtsc_precise();
-                            //uint64_t inference_cycles = end_cycles - start_cycles;
-                            //if (latency_count[core_id] < MAX_SAMPLES_PER_CORE) latency_cycles[core_id][latency_count[core_id]++] = inference_cycles;
-
-                            // // Convert to nanoseconds
-                            // double latency_ns = ((double)inference_cycles / hz) * 1e9;
-
-                            // printf("Latency: %.2f ns (%lu cycles)\n", latency_ns, inference_cycles); 
-                        }
-                                                                       
-                    }
-                }
+                rte_ether_addr_copy(&tmp, &eth->dst_addr);
+                
+                if (ethernet_type != RTE_ETHER_TYPE_IPV4) continue;
+                
+                // Parse IP header
+                uint32_t ip_offset = sizeof(struct rte_ether_hdr);
+                struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(pkt_data + ip_offset);
+                
+                uint8_t ip_hlen = (ip->version_ihl & RTE_IPV4_HDR_IHL_MASK) * RTE_IPV4_IHL_MULTIPLIER;
+                uint8_t ip_proto = ip->next_proto_id;
+                
+                if (ip_proto != 6) continue; // Not TCP
+                
+                // Parse TCP header
+                uint32_t tcp_offset = ip_offset + ip_hlen;
+                struct rte_tcp_hdr *tcp = (struct rte_tcp_hdr *)(pkt_data + tcp_offset);
+                
+                uint8_t tcp_hlen = (tcp->data_off >> 4) * 4;
+                uint16_t src_port = rte_be_to_cpu_16(tcp->src_port);
+                uint16_t dst_port = rte_be_to_cpu_16(tcp->dst_port);
+                
+                // Fast filter for port 443
+                if ((src_port != 443) && (dst_port != 443)) continue;
+                
+                // Calculate TLS payload position
+                uint32_t tls_offset = tcp_offset + tcp_hlen;
+                uint32_t payload_len = pkt_total_len - tls_offset;
+                
+                // Early TLS validation with minimal checks
+                if (payload_len < 5) continue; // Not enough for TLS header
+                
+                uint8_t *tls_data = pkt_data + tls_offset;
+                uint8_t tls_type = tls_data[0];
+                
+                if (tls_type != 23) continue; // Not application data
+                
+                // Extract TLS record length
+                uint16_t tls_record_len = (uint16_t)((tls_data[3] << 8) | tls_data[4]);
+                
+                // Validate TLS record fits in packet
+                if ((uint32_t)tls_record_len > (payload_len - 5)) continue;
+                
+                // Build flow key (FIXED: don't swap IPs initially)
+                struct flow_key key;
+                key.src_ip = ip->src_addr;  // Use original IPs
+                key.dst_ip = ip->dst_addr;
+                key.src_port = src_port;
+                key.dst_port = dst_port;
+                key.protocol = ip_proto;
+                
+                canonicalize_5tuple(&key);  // Let canonicalize do the swapping
+                
+                bool is_client = (src_port != 443);
+                handle_packet(&key, tls_record_len, w, is_client);
             }
-            uint64_t end_cycles = rte_rdtsc_precise();
-            uint64_t inference_cycles = end_cycles - start_cycles;
-            if (latency_count[core_id] < MAX_SAMPLES_PER_CORE) latency_cycles[core_id][latency_count[core_id]++] = inference_cycles;
+
+            //uint64_t end_cycles = rte_rdtsc_precise();
+            //uint64_t inference_cycles = end_cycles - start_cycles;
+            //if (latency_count[core_id] < MAX_SAMPLES_PER_CORE) latency_cycles[core_id][latency_count[core_id]++] = inference_cycles;
 
             if (unlikely(nb_rx == 0))
                 continue;
@@ -1175,7 +1145,7 @@ static void on_terminate(int signo) {
     rte_eal_cleanup();
     
     printf("=== Clean shutdown completed ===\n");
-    _exit(0);
+    exit(0);
 }
 
 // signal handler 
@@ -1328,8 +1298,17 @@ static void on_terminate(int signo) {
     for (unsigned core_id = 0; core_id < total_lcores; core_id++) {
     struct worker_args *w = &worker_args[core_id];
 
-    // Shared resources
-    w->mbuf_pool  = mbuf_pool;
+    struct rte_mempool *mbuf_pools[MAX_CORES];
+    for (unsigned core_id = 0; core_id < total_lcores; core_id++) {
+        char name[32];
+        snprintf(name, sizeof(name), "mbuf_pool_%u", core_id);
+        mbuf_pools[core_id] = rte_pktmbuf_pool_create(name,
+            NUM_MBUFS, 256, 0,  // Smaller per-core pool
+            RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+        if (!mbuf_pools[core_id])
+            rte_exit(EXIT_FAILURE, "Cannot create mbuf pool for core %u\n", core_id);
+    }
+    
     w->flow_table = flow_tables[core_id];
     w->flow_pool  = flow_pools[core_id];
     w->port_id  = base_port;
