@@ -661,8 +661,8 @@ handle_packet(struct flow_key   *key,
     uint32_t n_server = e->pkt_count_server;
     uint32_t total_pkts = n_client + n_server;
 
-    /* only finalize / build features when we've seen exactly N_PACKETS packets */
-    if (!e->finalized && total_pkts >= N_PACKETS) {
+    /* Process when we've seen exactly N_PACKETS packets, then reset */
+    if (total_pkts >= N_PACKETS) {
 
         uint64_t flow_duration_cycles = e->last_packet_tsc - e->first_packet_tsc;
         
@@ -770,12 +770,39 @@ handle_packet(struct flow_key   *key,
         if (idx < w->samples_capacity) {
             w->feat_cycles[idx]  = t1_feat - t0_feat;
             w->infer_cycles[idx] = t1_inf  - t0_inf;
-            w->flow_duration_cycles[idx] = flow_duration_cycles; //
+            w->flow_duration_cycles[idx] = flow_duration_cycles;
             w->sample_class[idx] = pred;
             w->samples_count = idx + 1;
         }
 
-        e->finalized = 1;  // prevent repeats
+        /* RESET THE FLOW FOR CONTINUOUS PROCESSING */
+        // Save the current timestamp as the new starting point
+        uint64_t new_start_tsc = e->last_packet_tsc;
+        
+        // Reset all flow statistics but keep the flow alive
+        e->pkt_count_client = 0;
+        e->pkt_count_server = 0;
+        e->bytes_client = 0;
+        e->bytes_server = 0;
+        e->pkt_len_min_client = UINT32_MAX;
+        e->pkt_len_min_server = UINT32_MAX;
+        e->pkt_len_max_client = 0;
+        e->pkt_len_max_server = 0;
+        e->pkt_len_sum_client = 0;
+        e->pkt_len_sum_server = 0;
+        e->last_direction = 0;
+        e->dir_switches = 0;
+        e->finalized = 0;  // Keep it active
+        
+        // Set new starting timestamp for the next window
+        e->first_packet_tsc = new_start_tsc;
+        e->last_packet_tsc = 0;
+
+        // Print flow ID + classification (optional)
+        /*printf("Flow %u:%u -> %u:%u proto %u classified as %d (RESET)\n",
+               key->src_ip, key->src_port,
+               key->dst_ip, key->dst_port,
+               key->protocol, pred);*/
     }
 }
 
