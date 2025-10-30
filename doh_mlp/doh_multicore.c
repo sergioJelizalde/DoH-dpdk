@@ -120,8 +120,11 @@ struct worker_args {
     float              *buf_a;
     float              *buf_b;
     uint16_t            queue_id;    
-    uint32_t            next_free;
     uint16_t port_id;
+
+    /* Lock-free allocator state */
+    uint32_t free_flow_head;      // Index of first free flow
+    uint32_t free_flow_count;     // How many flows are free
 
     /* per-worker timing buffers - allocate at init */
     uint64_t *feat_cycles;   /* length: samples_capacity */
@@ -480,6 +483,8 @@ static int predict_mlp(const float *in_features, float *buf_a, float *buf_b) {
 }
 
 
+/*
+
 static inline uint32_t
 allocate_entry_per_core(struct worker_args *w)
 {
@@ -488,10 +493,38 @@ allocate_entry_per_core(struct worker_args *w)
         return INVALID_INDEX;
     }
         
-    /* grab the next slot; it’s already zeroed at startup */
+     //grab the next slot; it’s already zeroed at startup 
     return w->next_free++;
 }
+*/
 
+static inline uint32_t
+allocate_entry_lockfree(struct worker_args *w)
+{
+    if (w->free_flow_head == INVALID_INDEX) {
+        return INVALID_INDEX;  // No free flows
+    }
+    
+    uint32_t index = w->free_flow_head;
+    w->free_flow_head = w->flow_pool[index].next_free;
+    w->free_flow_count--;
+    
+    // Reset the entry
+    reset_entry_per_core(w, index);
+    
+    return index;
+}
+
+static inline void
+free_flow_entry(struct worker_args *w, uint32_t index)
+{
+    if (index >= MAX_FLOWS_PER_CORE) return;
+    
+    // Add back to free list
+    w->flow_pool[index].next_free = w->free_flow_head;
+    w->free_flow_head = index;
+    w->free_flow_count++;
+}
 
 static inline void
 reset_entry_per_core(struct worker_args *w, uint32_t idx)
@@ -603,15 +636,16 @@ handle_packet(struct flow_key   *key,
     uint32_t index;
 
     if (ret < 0) {
-        // not found: new flow
-        index = allocate_entry_per_core(w);
+        // not found: new flow - USE LOCK-FREE ALLOCATOR
+        index = allocate_entry_lockfree(w);
         if (index == INVALID_INDEX) return;
 
         ret = rte_hash_add_key_data(w->flow_table, key, (void*)(uintptr_t)index);
-        if (ret < 0) { w->next_free--; return; }
-
-        struct flow_entry *new_e = &w->flow_pool[index];
-        reset_entry_per_core(w, index);
+        if (ret < 0) { 
+            // Rollback allocation if hash add fails
+            free_flow_entry(w, index);
+            return; 
+        }
     } else {
         // found existing flow
         index = (uint32_t)(uintptr_t)data_ptr;
@@ -740,16 +774,8 @@ handle_packet(struct flow_key   *key,
             w->sample_class[idx] = pred;
             w->samples_count = idx + 1;
         }
-        /* Log features — pass actual features buffer */
-        //log_features_csv(key, features16);
 
         e->finalized = 1;  // prevent repeats
-
-        // Print flow ID + classification
-        /*printf("Flow %u:%u -> %u:%u proto %u classified as %d\n",
-               key->src_ip, key->src_port,
-               key->dst_ip, key->dst_port,
-               key->protocol, pred);*/
     }
 }
 
@@ -1273,51 +1299,61 @@ static void on_terminate(int signo) {
     uint16_t base_port = 0;  // your only port
 
     for (unsigned core_id = 0; core_id < total_lcores; core_id++) {
-        struct worker_args *w = &worker_args[core_id];
+    struct worker_args *w = &worker_args[core_id];
 
-        // Shared resources
-        w->mbuf_pool  = mbuf_pool;
-        w->flow_table = flow_tables[core_id];
-        w->flow_pool  = flow_pools[core_id];
-        w->port_id  = base_port;
+    // Shared resources
+    w->mbuf_pool  = mbuf_pool;
+    w->flow_table = flow_tables[core_id];
+    w->flow_pool  = flow_pools[core_id];
+    w->port_id  = base_port;
 
-        const size_t SAMPLES_CAP = MAX_SAMPLES_PER_CORE;
-        w->samples_capacity = SAMPLES_CAP;
-        w->samples_count = 0;
-
-        if (posix_memalign((void **)&w->feat_cycles, 64, SAMPLES_CAP * sizeof(uint64_t)) ||
-            posix_memalign((void **)&w->infer_cycles, 64, SAMPLES_CAP * sizeof(uint64_t)) ||
-            posix_memalign((void **)&w->flow_duration_cycles, 64, SAMPLES_CAP * sizeof(uint64_t)) ||
-            posix_memalign((void **)&w->sample_class, 64, SAMPLES_CAP * sizeof(int32_t))) {
-            rte_exit(EXIT_FAILURE, "posix_memalign failed for per-core timing buffers (core %u)\n", core_id);
-        }
-
-        memset(w->feat_cycles, 0, SAMPLES_CAP * sizeof(uint64_t));
-        memset(w->infer_cycles, 0, SAMPLES_CAP * sizeof(uint64_t));
-        memset(w->flow_duration_cycles, 0, SAMPLES_CAP * sizeof(uint64_t));
-        memset(w->sample_class, 0, SAMPLES_CAP * sizeof(int32_t));
-
-
-        //  Per-core state
-        w->next_free  = 0;            // start allocating at slot 0
-        w->queue_id   = queue_id++;   // one RX queue per core
-        /* allocate per-core prediction counters */
-        w->pred_count = malloc(sizeof(uint64_t) * NUM_CLASSES);
-        if (!w->pred_count) {
-            rte_exit(EXIT_FAILURE, "malloc failed for pred_count core %u\n", core_id);
-        }
-        memset(w->pred_count, 0, sizeof(uint64_t) * NUM_CLASSES);
-        // Scratch buffers for NEON inference
-        if (posix_memalign((void**)&w->buf_a, 16, max_neurons * sizeof(float)) ||
-            posix_memalign((void**)&w->buf_b, 16, max_neurons * sizeof(float))) {
-            rte_exit(EXIT_FAILURE, "posix_memalign failed for core %u\n", core_id);
-        }
-
-        // Launch worker on that core (skip core 0 if you plan to use it as master below)
-        if (core_id != rte_get_main_lcore()) {
-            rte_eal_remote_launch(lcore_main, w, core_id);
-        }
+    /* Initialize lock-free flow allocator */
+    w->free_flow_head = 0;
+    w->free_flow_count = MAX_FLOWS_PER_CORE;
+    
+    // Build free list - link all flows together
+    for (uint32_t i = 0; i < MAX_FLOWS_PER_CORE - 1; i++) {
+        w->flow_pool[i].next_free = i + 1;
     }
+    w->flow_pool[MAX_FLOWS_PER_CORE - 1].next_free = INVALID_INDEX;
+
+    const size_t SAMPLES_CAP = MAX_SAMPLES_PER_CORE;
+    w->samples_capacity = SAMPLES_CAP;
+    w->samples_count = 0;
+
+    if (posix_memalign((void **)&w->feat_cycles, 64, SAMPLES_CAP * sizeof(uint64_t)) ||
+        posix_memalign((void **)&w->infer_cycles, 64, SAMPLES_CAP * sizeof(uint64_t)) ||
+        posix_memalign((void **)&w->flow_duration_cycles, 64, SAMPLES_CAP * sizeof(uint64_t)) ||
+        posix_memalign((void **)&w->sample_class, 64, SAMPLES_CAP * sizeof(int32_t))) {
+        rte_exit(EXIT_FAILURE, "posix_memalign failed for per-core timing buffers (core %u)\n", core_id);
+    }
+
+    memset(w->feat_cycles, 0, SAMPLES_CAP * sizeof(uint64_t));
+    memset(w->infer_cycles, 0, SAMPLES_CAP * sizeof(uint64_t));
+    memset(w->flow_duration_cycles, 0, SAMPLES_CAP * sizeof(uint64_t));
+    memset(w->sample_class, 0, SAMPLES_CAP * sizeof(int32_t));
+
+    // Per-core state
+    w->queue_id   = queue_id++;   // one RX queue per core
+    
+    /* allocate per-core prediction counters */
+    w->pred_count = malloc(sizeof(uint64_t) * NUM_CLASSES);
+    if (!w->pred_count) {
+        rte_exit(EXIT_FAILURE, "malloc failed for pred_count core %u\n", core_id);
+    }
+    memset(w->pred_count, 0, sizeof(uint64_t) * NUM_CLASSES);
+    
+    // Scratch buffers for NEON inference
+    if (posix_memalign((void**)&w->buf_a, 16, max_neurons * sizeof(float)) ||
+        posix_memalign((void**)&w->buf_b, 16, max_neurons * sizeof(float))) {
+        rte_exit(EXIT_FAILURE, "posix_memalign failed for core %u\n", core_id);
+    }
+
+    // Launch worker on that core (skip core 0 if you plan to use it as master below)
+    if (core_id != rte_get_main_lcore()) {
+        rte_eal_remote_launch(lcore_main, w, core_id);
+    }
+}
 
     // run master0)
     unsigned master = rte_get_main_lcore();
