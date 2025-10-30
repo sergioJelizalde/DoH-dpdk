@@ -99,7 +99,7 @@ static FILE *g_feat_csv = NULL;
 #define NUM_FEATURES 16
 #define INVALID_INDEX   UINT32_MAX
 
-#define MAX_FLOWS_PER_CORE 500000
+#define MAX_FLOWS_PER_CORE 65536
 #define MAX_CORES       RTE_MAX_LCORE
 
 
@@ -126,6 +126,7 @@ struct worker_args {
     /* per-worker timing buffers - allocate at init */
     uint64_t *feat_cycles;   /* length: samples_capacity */
     uint64_t *infer_cycles;  /* length: samples_capacity */
+    uint64_t *flow_duration_cycles; /* NEW: flow duration in cycles */
     int32_t  *sample_class;  /* length: samples_capacity */
     size_t    samples_capacity;
     size_t    samples_count;
@@ -142,27 +143,30 @@ struct flow_key {
 } __attribute__((packed));
 
 struct flow_entry {
-
-    /* directional bytes and counts */
-    uint64_t bytes_client;      // client/initiator -> server
-    uint64_t bytes_server;      // server -> client
-    uint32_t pkt_count_client;  // n_client
-    uint32_t pkt_count_server;  // n_server
-
-    /* per-direction size stats */
+    // Frequently accessed fields first
+    uint32_t pkt_count_client;
+    uint32_t pkt_count_server;
+    uint64_t bytes_client;
+    uint64_t bytes_server;
+    
+    // Less frequently accessed
     uint32_t pkt_len_min_client;
     uint32_t pkt_len_max_client;
-    uint64_t pkt_len_sum_client;
-
     uint32_t pkt_len_min_server;
     uint32_t pkt_len_max_server;
+    uint64_t pkt_len_sum_client;
     uint64_t pkt_len_sum_server;
-
-    /* direction switch counter */
-    uint8_t last_direction;  // 0 = unknown, 1 = fwd (client), 2 = rev (server)
+    
+    // Infrequently accessed
+    uint8_t last_direction;
     uint16_t dir_switches;
     uint8_t finalized;
-};
+    uint64_t first_packet_tsc;
+    uint64_t last_packet_tsc;
+    
+    // For free list
+    uint32_t next_free;
+} __rte_cache_aligned;
 
 /* Statically allocate pools for every possible lcore */
 static struct flow_entry flow_pools[MAX_CORES][MAX_FLOWS_PER_CORE];
@@ -389,7 +393,6 @@ static inline float32x4_t sigmoid_neon(float32x4_t x) {
     return vbslq_f32(mask, pos, neg);
 }
 
-// NEON‐vectorized layer with COMPILE-TIME path selection
 static void layer_forward_neon(const float *W, const float *B,
                                const float *in, float *out,
                                int size_in, int size_out,
@@ -402,69 +405,68 @@ static void layer_forward_neon(const float *W, const float *B,
                             vdupq_n_f32(in[k]),
                             vld1q_f32(&W[k*size_out + j]));
         }
-        if (!is_output)  acc = vmaxq_f32(acc, vdupq_n_f32(0.0f));
+        if (!is_output) acc = vmaxq_f32(acc, vdupq_n_f32(0.0f));
         vst1q_f32(&out[j], acc);
     }
 
-    /*
-    // tail scalar
+    // UNCOMMENTED TAIL HANDLING - CRITICAL!
     for (; j < size_out; j++) {
         float a = B[j];
         for (int k = 0; k < size_in; k++)
             a += W[k*size_out + j] * in[k];
-        out[j] = is_output ? a : (a > 0.0f ? a : 0.0f);
-    }
-    */
-    
-    
-    if (is_output) {
-        #if IS_BINARY_CLASSIFICATION
-        // BINARY PATH: fast_sigmoid for single output
-        for (int i = 0; i < size_out; i++)
-            out[i] = sigmoid_piece(out[i]);
-        
-        #elif IS_MULTICLASS_CLASSIFICATION  
-        // MULTICLASS PATH: softmax for multiple outputs
-        float max_val = out[0];
-        for (int i = 1; i < size_out; i++) {
-            if (out[i] > max_val) max_val = out[i];
-        }
-        
-        float sum = 0.0f;
-        for (int i = 0; i < size_out; i++) {
-            out[i] = expf(out[i] - max_val);
-            sum += out[i];
-        }
-        
-        for (int i = 0; i < size_out; i++) {
-            out[i] /= sum;
-        }
-        #endif
+        if (!is_output) a = (a > 0.0f) ? a : 0.0f;
+        out[j] = a;
     }
 }
 
-// NEON MLP with COMPILE-TIME path selection
 static int predict_mlp(const float *in_features, float *buf_a, float *buf_b) {
     float *in_buf = buf_a, *out_buf = buf_b;
     memcpy(in_buf, in_features, LAYER_SIZES[0] * sizeof(float));
 
     for (int L = 0; L < NUM_LAYERS; L++) {
+        int is_output_layer = (L == NUM_LAYERS - 1);
         layer_forward_neon(WEIGHTS[L], BIASES[L],
                            in_buf, out_buf,
                            LAYER_SIZES[L],
                            LAYER_SIZES[L+1],
-                           (L == NUM_LAYERS - 1));
+                           is_output_layer);
+        
+        // Apply activation functions ONLY to final output
+        if (is_output_layer) {
+            #if IS_BINARY_CLASSIFICATION
+            // Apply sigmoid to final output only
+            for (int i = 0; i < LAYER_SIZES[L+1]; i++)
+                out_buf[i] = sigmoid_piece(out_buf[i]);
+            
+            #elif IS_MULTICLASS_CLASSIFICATION  
+            // Apply softmax to final output only
+            float max_val = out_buf[0];
+            for (int i = 1; i < LAYER_SIZES[L+1]; i++) {
+                if (out_buf[i] > max_val) max_val = out_buf[i];
+            }
+            
+            float sum = 0.0f;
+            for (int i = 0; i < LAYER_SIZES[L+1]; i++) {
+                out_buf[i] = expf(out_buf[i] - max_val);
+                sum += out_buf[i];
+            }
+            
+            for (int i = 0; i < LAYER_SIZES[L+1]; i++) {
+                out_buf[i] /= sum;
+            }
+            #endif
+        }
+        
         float *tmp = in_buf; in_buf = out_buf; out_buf = tmp;
     }
 
+    // Final result is now in in_buf (due to the last swap)
     int final_size = LAYER_SIZES[NUM_LAYERS];
     
     #if IS_BINARY_CLASSIFICATION
-    // BINARY: threshold at 0.5
     return (in_buf[0] >= 0.5f) ? 1 : 0;
     
     #elif IS_MULTICLASS_CLASSIFICATION
-    // MULTICLASS: return class with highest probability
     int best_class = 0; 
     float best_probability = in_buf[0];
     for (int i = 1; i < final_size; i++) {
@@ -517,6 +519,11 @@ reset_entry_per_core(struct worker_args *w, uint32_t idx)
     e->dir_switches = 0;
 
     e->finalized = 0;
+
+    // Initialize timing fields
+    e->first_packet_tsc = 0;
+    e->last_packet_tsc = 0;
+
 }
 
 static inline uint8_t
@@ -528,13 +535,19 @@ count_bits(uint8_t x) {
 static inline void
 update_flow_entry(struct flow_entry *e,
                   uint16_t           pkt_len,
-                  bool               is_client)
+                  bool               is_client,
+                  uint64_t           current_tsc)
 {
     // Total packets already seen for this flow (client + server)
     uint32_t total_pkts = e->pkt_count_client + e->pkt_count_server;
 
     // Stop updating if flow already finalized or we've seen enough packets
     if (e->finalized || total_pkts >= N_PACKETS) return;
+
+    // Record first packet timestamp
+    if (total_pkts == 0) {
+        e->first_packet_tsc = current_tsc;
+    }
 
     if (is_client) {
         /* Client-side update */
@@ -570,12 +583,18 @@ update_flow_entry(struct flow_entry *e,
         e->dir_switches++;
     }
     e->last_direction = cur_dir;
+
+    // Record timestamp for the Nth packet (when we reach N_PACKETS)
+    total_pkts = e->pkt_count_client + e->pkt_count_server;
+    if (total_pkts == N_PACKETS) {
+        e->last_packet_tsc = current_tsc;
+    }
 }
 
 
 static inline void
 handle_packet(struct flow_key   *key,
-              uint16_t           pkt_len,
+              uint16_t           tls_payload_size,
               struct worker_args *w,
               bool                is_client)
 {
@@ -600,8 +619,8 @@ handle_packet(struct flow_key   *key,
 
     struct flow_entry *e = &w->flow_pool[index];
 
-    /* Update per-flow stats using per-side client/server bookkeeping */
-    update_flow_entry(e, pkt_len, is_client);
+    uint64_t current_tsc = rte_rdtsc_precise();
+    update_flow_entry(e, tls_payload_size, is_client, current_tsc);
 
     /* compute totals after update */
     uint32_t n_client = e->pkt_count_client;
@@ -611,6 +630,8 @@ handle_packet(struct flow_key   *key,
     /* only finalize / build features when we've seen exactly N_PACKETS packets */
     if (!e->finalized && total_pkts >= N_PACKETS) {
 
+        uint64_t flow_duration_cycles = e->last_packet_tsc - e->first_packet_tsc;
+        
         double client_bytes = (double)e->bytes_client;
         double server_bytes = (double)e->bytes_server;
         double total_bytes = client_bytes + server_bytes;
@@ -698,10 +719,6 @@ handle_packet(struct flow_key   *key,
         features16[14] = server_pkt_min;
         features16[15] = client_pkt_mean;
 
-
-
-
-
         /* Normalize & predict: ensure FEATURE_MEAN/STD match NUM_FEATURES */
        
         ALIGN16 float features_scaled[16];
@@ -719,6 +736,7 @@ handle_packet(struct flow_key   *key,
         if (idx < w->samples_capacity) {
             w->feat_cycles[idx]  = t1_feat - t0_feat;
             w->infer_cycles[idx] = t1_inf  - t0_inf;
+            w->flow_duration_cycles[idx] = flow_duration_cycles; //
             w->sample_class[idx] = pred;
             w->samples_count = idx + 1;
         }
@@ -1068,16 +1086,20 @@ static void on_terminate(int signo) {
         FILE *f = fopen(fname, "w");
         if (!f) continue;
 
-        fprintf(f, "sample,class,feat_cycles,inf_cycles\n");
+        // In the timing file writing section:
+        fprintf(f, "sample,class,feat_cycles,inf_cycles,flow_duration_cycles,flow_duration_ns\n");
         for (size_t i = 0; i < w->samples_count; i++) {
-            fprintf(f, "%zu,%d,%" PRIu64 ",%" PRIu64 "\n",
-                    i, w->sample_class[i], w->feat_cycles[i], w->infer_cycles[i]);
+            double flow_duration_ns = ((double)w->flow_duration_cycles[i] / tsc_hz) * 1e9;
+            fprintf(f, "%zu,%d,%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%.2f\n",
+                    i, w->sample_class[i], w->feat_cycles[i], w->infer_cycles[i],
+                    w->flow_duration_cycles[i], flow_duration_ns);
         }
         fclose(f);
         printf("✓ Core %u: %zu timing samples saved\n", core, w->samples_count);
 
         free(w->feat_cycles);
         free(w->infer_cycles);
+        free(w->flow_duration_cycles);
         free(w->sample_class);
         w->feat_cycles = w->infer_cycles = (void *)0;
     }
@@ -1203,7 +1225,7 @@ static void on_terminate(int signo) {
     struct rte_hash_parameters p = {
     .entries           = MAX_FLOWS_PER_CORE,
     .key_len           = sizeof(struct flow_key),
-    .hash_func         = rte_jhash,
+    .hash_func         = rte_hash_crc,
     .hash_func_init_val= 0,
     .socket_id         = rte_socket_id(),
     };
@@ -1265,12 +1287,14 @@ static void on_terminate(int signo) {
 
         if (posix_memalign((void **)&w->feat_cycles, 64, SAMPLES_CAP * sizeof(uint64_t)) ||
             posix_memalign((void **)&w->infer_cycles, 64, SAMPLES_CAP * sizeof(uint64_t)) ||
+            posix_memalign((void **)&w->flow_duration_cycles, 64, SAMPLES_CAP * sizeof(uint64_t)) ||
             posix_memalign((void **)&w->sample_class, 64, SAMPLES_CAP * sizeof(int32_t))) {
             rte_exit(EXIT_FAILURE, "posix_memalign failed for per-core timing buffers (core %u)\n", core_id);
         }
 
         memset(w->feat_cycles, 0, SAMPLES_CAP * sizeof(uint64_t));
         memset(w->infer_cycles, 0, SAMPLES_CAP * sizeof(uint64_t));
+        memset(w->flow_duration_cycles, 0, SAMPLES_CAP * sizeof(uint64_t));
         memset(w->sample_class, 0, SAMPLES_CAP * sizeof(int32_t));
 
 
